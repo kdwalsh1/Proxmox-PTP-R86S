@@ -124,10 +124,10 @@ When at least one interface is enabled, the agent renders
 `/etc/linuxptp/ptp4l.conf` with one `[<interface>]` section per enabled
 port:
 
-- **Uplink** port: no `masterOnly` override (defaults to `0`), so BMCA can
+- **Uplink** port: no `serverOnly` override (defaults to `0`), so BMCA can
   let it run as SLAVE to a better clock, or as MASTER/GM if nothing better
   is heard.
-- **Downstream** ports: `masterOnly 1`, so they never become SLAVE and
+- **Downstream** ports: `serverOnly 1`, so they never become SLAVE and
   always advertise this device as master - this is what "terminates" the
   domain for downstream devices rather than transparently relaying it.
 - `time_stamping` is a global-only option in `ptp4l`, so it's set once in

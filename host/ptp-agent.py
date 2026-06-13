@@ -213,7 +213,7 @@ def render_ptp4l_conf(desired, interfaces):
     for name, cfg, iface in enabled:
         lines.append(f"\n[{name}]")
         if cfg.get("role") == "downstream":
-            lines.append("masterOnly\t\t1")
+            lines.append("serverOnly\t\t1")
 
     return "\n".join(lines) + "\n"
 
