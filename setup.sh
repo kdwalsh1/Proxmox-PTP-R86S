@@ -79,14 +79,10 @@ install -m 755 "$REPO_DIR/host/ptp-agent.py" /opt/ptp-webui/ptp-agent.py
 install -m 644 "$REPO_DIR/host/ptp4l.conf.template" /opt/ptp-webui/ptp4l.conf.template
 install -m 644 "$REPO_DIR/host/ptp-agent.service" /etc/systemd/system/ptp-agent.service
 
-# The stock ptp4l.service unit on Debian hardcodes "-i eth0"; override it so
-# ptp4l is driven entirely by the config file ptp-agent generates.
-mkdir -p /etc/systemd/system/ptp4l.service.d
-cat > /etc/systemd/system/ptp4l.service.d/override.conf <<'EOF'
-[Service]
-ExecStart=
-ExecStart=/usr/sbin/ptp4l -f /etc/linuxptp/ptp4l.conf
-EOF
+# The linuxptp package does not ship a ptp4l.service unit; ptp-agent manages
+# ptp4l via systemctl, so provide one driven entirely by its generated config.
+install -m 644 "$REPO_DIR/host/ptp4l.service" /etc/systemd/system/ptp4l.service
+rm -rf /etc/systemd/system/ptp4l.service.d
 
 systemctl daemon-reload
 systemctl enable --now ptp-agent >/dev/null

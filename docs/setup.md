@@ -52,9 +52,10 @@ Run as root on the Proxmox host. The script:
    an API token (`/etc/ptp-webui/agent.token`), and seeds
    `/etc/ptp-webui/desired.json` with **no interfaces enabled** - PTP stays
    off until you configure it from the dashboard.
-3. Adds a systemd override so the stock `ptp4l.service` is driven entirely
-   by the agent-generated `/etc/linuxptp/ptp4l.conf` (the distro unit
-   normally hardcodes `-i eth0`).
+3. Installs a `ptp4l.service` systemd unit (the `linuxptp` package doesn't
+   ship one) that runs `ptp4l` against the agent-generated
+   `/etc/linuxptp/ptp4l.conf`. The agent enables/starts or
+   disables/stops this unit based on `desired.json`.
 4. Creates a new unprivileged Debian 12 LXC (`ptp-webui`, DHCP on `vmbr0`),
    installs Apache + PHP, and deploys `webui/` to
    `/var/www/ptp-webui/public`.
