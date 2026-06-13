@@ -379,12 +379,12 @@
     document.querySelectorAll('#profiles .profile-settings').forEach((form) => {
       const name = form.dataset.profile;
       profiles[name] = {
-        domainNumber: parseInt(form.domainNumber.value, 10),
-        priority1: parseInt(form.priority1.value, 10),
-        priority2: parseInt(form.priority2.value, 10),
-        logAnnounceInterval: parseInt(form.logAnnounceInterval.value, 10),
-        logSyncInterval: parseInt(form.logSyncInterval.value, 10),
-        logMinDelayReqInterval: parseInt(form.logMinDelayReqInterval.value, 10),
+        domainNumber: parseInt(form.querySelector('[name="domainNumber"]').value, 10),
+        priority1: parseInt(form.querySelector('[name="priority1"]').value, 10),
+        priority2: parseInt(form.querySelector('[name="priority2"]').value, 10),
+        logAnnounceInterval: parseInt(form.querySelector('[name="logAnnounceInterval"]').value, 10),
+        logSyncInterval: parseInt(form.querySelector('[name="logSyncInterval"]').value, 10),
+        logMinDelayReqInterval: parseInt(form.querySelector('[name="logMinDelayReqInterval"]').value, 10),
         interfaces: {},
       };
     });
@@ -544,7 +544,7 @@
 
     const used = new Set();
     document.querySelectorAll('#profiles .profile-settings').forEach((form) => {
-      used.add(parseInt(form.domainNumber.value, 10));
+      used.add(parseInt(form.querySelector('[name="domainNumber"]').value, 10));
     });
     let domain = 0;
     while (used.has(domain) && domain <= 127) domain++;
