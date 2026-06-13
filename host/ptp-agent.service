@@ -1,0 +1,13 @@
+[Unit]
+Description=PTP web UI control agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/ptp-webui/ptp-agent.py
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
