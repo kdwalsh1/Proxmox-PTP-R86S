@@ -2,6 +2,7 @@
   const csrfToken = document.querySelector('meta[name="csrf"]').content;
   const PHC_GROUP_LETTERS = 'ABCDEFGH';
   let chart;
+  let phcGroups = {};
 
   async function fetchJSON(path, options) {
     const res = await fetch(path, options);
@@ -55,21 +56,37 @@
     el.textContent = 'No grandmaster present on the uplink yet.';
   }
 
+  function computePhcGroups(interfaces) {
+    const groups = {};
+    let next = 0;
+    (interfaces || []).forEach((iface) => {
+      if (iface.phc_index !== null && !(iface.phc_index in groups)) {
+        groups[iface.phc_index] = PHC_GROUP_LETTERS[next++] || '?';
+      }
+    });
+    return groups;
+  }
+
+  function ifaceMetaText(iface) {
+    const speed = iface.speed_mbps ? `${iface.speed_mbps} Mb/s` : 'no link';
+    const hw = iface.phc_index !== null
+      ? `HW clock ${phcGroups[iface.phc_index]} (#${iface.phc_index})`
+      : 'software timestamping';
+    return `${iface.driver || 'unknown driver'} - ${speed} - ${hw}`;
+  }
+
+  // Builds the interface cards from scratch. Only called once (on initial
+  // load) so it doesn't clobber checkbox/role choices the user hasn't saved
+  // yet - subsequent status polls go through updateInterfaceBadges instead.
   function renderInterfaces(status) {
     const container = document.getElementById('interfaces');
     container.innerHTML = '';
-
-    const phcGroups = {};
-    let next = 0;
-    (status.interfaces || []).forEach((iface) => {
-      if (iface.phc_index !== null && !(iface.phc_index in phcGroups)) {
-        phcGroups[iface.phc_index] = PHC_GROUP_LETTERS[next++] || '?';
-      }
-    });
+    phcGroups = computePhcGroups(status.interfaces);
 
     (status.interfaces || []).forEach((iface) => {
       const card = document.createElement('div');
       card.className = 'iface-card' + (iface.link ? ' link-up' : ' link-down');
+      card.dataset.iface = iface.name;
 
       const title = document.createElement('h3');
       title.textContent = iface.name;
@@ -77,19 +94,13 @@
 
       const meta = document.createElement('div');
       meta.className = 'iface-meta';
-      const speed = iface.speed_mbps ? `${iface.speed_mbps} Mb/s` : 'no link';
-      const hw = iface.phc_index !== null
-        ? `HW clock ${phcGroups[iface.phc_index]} (#${iface.phc_index})`
-        : 'software timestamping';
-      meta.textContent = `${iface.driver || 'unknown driver'} - ${speed} - ${hw}`;
+      meta.textContent = ifaceMetaText(iface);
       card.appendChild(meta);
 
-      if (iface.enabled && iface.port_state) {
-        const state = document.createElement('span');
-        state.className = 'port-state port-state-' + iface.port_state.toLowerCase();
-        state.textContent = iface.port_state;
-        card.appendChild(state);
-      }
+      const state = document.createElement('span');
+      state.className = 'port-state';
+      state.style.display = 'none';
+      card.appendChild(state);
 
       const enabledLabel = document.createElement('label');
       enabledLabel.className = 'iface-toggle';
@@ -120,6 +131,36 @@
       card.appendChild(roles);
 
       container.appendChild(card);
+    });
+
+    updateInterfaceBadges(status);
+  }
+
+  // Updates the read-only parts of each card (link state, speed, port
+  // state) on every status poll, without touching the enable checkbox or
+  // role radios so unsaved user changes survive until Save is clicked.
+  function updateInterfaceBadges(status) {
+    (status.interfaces || []).forEach((iface) => {
+      const card = document.querySelector(`#interfaces .iface-card[data-iface="${iface.name}"]`);
+      if (!card) return;
+
+      card.classList.toggle('link-up', !!iface.link);
+      card.classList.toggle('link-down', !iface.link);
+
+      const meta = card.querySelector('.iface-meta');
+      if (meta) meta.textContent = ifaceMetaText(iface);
+
+      const state = card.querySelector('.port-state');
+      if (!state) return;
+      if (iface.enabled && iface.port_state) {
+        state.className = 'port-state port-state-' + iface.port_state.toLowerCase();
+        state.textContent = iface.port_state;
+        state.style.display = '';
+      } else {
+        state.className = 'port-state';
+        state.textContent = '';
+        state.style.display = 'none';
+      }
     });
   }
 
@@ -174,7 +215,11 @@
     const { ok, data } = await fetchJSON('ajax.php?action=status');
     if (!ok) return;
     renderBanner(data);
-    renderInterfaces(data);
+    if (document.querySelector('#interfaces .iface-card')) {
+      updateInterfaceBadges(data);
+    } else {
+      renderInterfaces(data);
+    }
   }
 
   async function refreshHistory() {
