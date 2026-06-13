@@ -92,7 +92,10 @@ def discover_interfaces():
         rc, out, _ = run(["ethtool", "-T", name])
         if rc == 0:
             for line in out.splitlines():
-                if "PTP Hardware Clock" in line:
+                line = line.strip()
+                # Older ethtool/kernels report "PTP Hardware Clock: N";
+                # newer ones report "Hardware timestamp provider index: N".
+                if line.startswith("PTP Hardware Clock:") or line.startswith("Hardware timestamp provider index:"):
                     val = line.split(":", 1)[1].strip()
                     if val.isdigit():
                         phc = int(val)
