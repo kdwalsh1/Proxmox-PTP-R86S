@@ -204,12 +204,14 @@ def render_ptp4l_conf(desired, interfaces):
     if len(phcs) > 1:
         lines.append("boundary_clock_jbod\t1")
 
+    # time_stamping is a global-only option (not valid per-port): use
+    # hardware only if every enabled port has a PHC, otherwise fall back to
+    # software for all of them so ptp4l doesn't fail to parse the config.
+    all_hw = all(iface["phc_index"] is not None for _, _, iface in enabled)
+    lines.append(f"time_stamping\t\t{'hardware' if all_hw else 'software'}")
+
     for name, cfg, iface in enabled:
         lines.append(f"\n[{name}]")
-        if iface["phc_index"] is not None:
-            lines.append("time_stamping\t\thardware")
-        else:
-            lines.append("time_stamping\t\tsoftware")
         if cfg.get("role") == "downstream":
             lines.append("masterOnly\t\t1")
 

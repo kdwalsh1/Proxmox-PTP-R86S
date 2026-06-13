@@ -130,8 +130,9 @@ port:
 - **Downstream** ports: `masterOnly 1`, so they never become SLAVE and
   always advertise this device as master - this is what "terminates" the
   domain for downstream devices rather than transparently relaying it.
-- `time_stamping` is set per-port to `hardware` or `software` depending on
-  whether `ethtool -T <iface>` reports a PHC for that interface.
+- `time_stamping` is a global-only option in `ptp4l`, so it's set once in
+  `[global]`: `hardware` if every enabled port has a PHC (per `ethtool -T`),
+  otherwise `software` for all of them.
 - `boundary_clock_jbod 1` is set automatically whenever the *enabled*
   interfaces span more than one distinct PHC (e.g. an onboard i225/i226 port
   plus a discrete NIC) - required because the boundary clock can't assume a
