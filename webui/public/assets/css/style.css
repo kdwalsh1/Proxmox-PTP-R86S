@@ -129,6 +129,160 @@ h2 {
   color: #4b5563;
 }
 
+.iface-profile {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: #4b5563;
+  margin: 0.4rem 0;
+}
+
+.iface-profile select {
+  font-size: 0.85rem;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+}
+
+/* VLANs */
+
+.vlan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.vlan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.9rem;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+}
+
+.vlan-row button {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  background: #fff;
+  cursor: pointer;
+}
+
+.vlan-row button:disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.empty-hint {
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.vlan-form {
+  display: flex;
+  align-items: end;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.vlan-form label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  color: #4b5563;
+  gap: 0.25rem;
+}
+
+.vlan-form input,
+.vlan-form select {
+  font-size: 1rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+}
+
+/* PTP profiles */
+
+.profile-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.profile-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.profile-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+}
+
+.profile-header button {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  background: #fff;
+  cursor: pointer;
+}
+
+.profile-card .banner {
+  margin-bottom: 1rem;
+}
+
+.profile-card .settings-form {
+  margin-bottom: 1rem;
+}
+
+.profile-card canvas {
+  max-height: 200px;
+}
+
+/* Clock synchronization */
+
+.phc2sys-info {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 0.85rem 1rem;
+  font-size: 0.9rem;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  color: #4b5563;
+}
+
+.phc2sys-info div + div {
+  margin-top: 0.25rem;
+}
+
+/* Save bar */
+
+.save-bar {
+  position: sticky;
+  bottom: 0;
+  background: #f3f4f6;
+  padding: 1rem 0;
+  border-top: 1px solid #e5e7eb;
+}
+
+.save-bar .settings-actions button {
+  padding: 0.6rem 1.5rem;
+  font-size: 1rem;
+}
+
 /* Settings form */
 
 .settings-form {

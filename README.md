@@ -17,17 +17,20 @@ for configuration and monitoring.
 - Run `linuxptp` (`ptp4l` / `phc2sys`) on the Proxmox host, syncing the
   system clock to an external PTP grandmaster on one "uplink" interface
   using hardware timestamps.
-- Re-distribute PTP to other interfaces in the same domain, terminating it
-  there for downstream devices (boundary clock behaviour).
-- Provide a web dashboard (running in its own LXC) to enable/disable PTP per
-  interface, choose uplink vs. downstream roles, tune domain/priority/interval
-  settings, see grandmaster status, and graph offset-from-GM over time.
+- Re-distribute PTP to other interfaces, terminating it for downstream
+  devices (boundary clock behaviour) - including re-distributing as a
+  *different* PTP domain on a VLAN sub-interface, so PTP-unaware switches
+  can sit in between.
+- Provide a web dashboard (running in its own LXC) to manage VLAN
+  sub-interfaces and one or more independent PTP "profiles" (domains), each
+  with its own interfaces/roles and domain/priority/interval settings, see
+  per-profile grandmaster status, and graph offset-from-GM over time.
 
 ## Repository layout
 
 ```
 setup.sh    One-shot install/provisioning script (run as root on Proxmox)
-host/       Files deployed on the Proxmox host (ptp-agent daemon, systemd unit, ptp4l.conf template)
+host/       Files deployed on the Proxmox host (ptp-agent daemon, systemd units, ptp4l.conf template)
 webui/      PHP web dashboard, deployed into a new LXC
 docs/       Architecture, setup walkthrough, and troubleshooting notes
 ```

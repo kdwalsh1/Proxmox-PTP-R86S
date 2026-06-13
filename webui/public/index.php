@@ -21,7 +21,22 @@ $csrf = csrf_token();
   </header>
 
   <main>
-    <div id="banner" class="banner">Loading status...</div>
+    <section>
+      <h2>VLANs</h2>
+      <div id="vlans" class="vlan-list"></div>
+      <form id="vlan-form" class="vlan-form">
+        <label>Parent interface
+          <select name="parent" required></select>
+        </label>
+        <label>VLAN ID
+          <input type="number" name="vlan_id" min="1" max="4094" required>
+        </label>
+        <div class="settings-actions">
+          <button type="submit">Add VLAN</button>
+          <span id="vlan-status"></span>
+        </div>
+      </form>
+    </section>
 
     <section>
       <h2>Interfaces</h2>
@@ -29,36 +44,23 @@ $csrf = csrf_token();
     </section>
 
     <section>
-      <h2>Global PTP settings</h2>
-      <form id="settings-form" class="settings-form">
-        <label>Domain number
-          <input type="number" name="domainNumber" min="0" max="127" required>
-        </label>
-        <label>Priority 1
-          <input type="number" name="priority1" min="0" max="255" required>
-        </label>
-        <label>Priority 2
-          <input type="number" name="priority2" min="0" max="255" required>
-        </label>
-        <label>Announce interval
-          <select name="logAnnounceInterval"></select>
-        </label>
-        <label>Sync interval
-          <select name="logSyncInterval"></select>
-        </label>
-        <label>Min delay request interval
-          <select name="logMinDelayReqInterval"></select>
-        </label>
-        <div class="settings-actions">
-          <button type="submit">Save</button>
-          <span id="save-status"></span>
-        </div>
-      </form>
+      <h2>PTP profiles</h2>
+      <div id="profiles"></div>
+      <div class="settings-actions">
+        <button id="add-profile" type="button">Add profile</button>
+      </div>
     </section>
 
     <section>
-      <h2>Offset from grandmaster</h2>
-      <canvas id="offset-chart" height="100"></canvas>
+      <h2>Clock synchronization</h2>
+      <div id="phc2sys-info" class="phc2sys-info"></div>
+    </section>
+
+    <section class="save-bar">
+      <div class="settings-actions">
+        <button id="save-all" type="button">Save changes</button>
+        <span id="save-status"></span>
+      </div>
     </section>
   </main>
 

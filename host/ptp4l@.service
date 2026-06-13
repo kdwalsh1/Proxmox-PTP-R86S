@@ -1,11 +1,11 @@
 [Unit]
-Description=Precision Time Protocol (PTP) service
+Description=Precision Time Protocol (PTP) service (%i)
 Documentation=man:ptp4l(8)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/sbin/ptp4l -f /etc/linuxptp/ptp4l.conf
+ExecStart=/usr/sbin/ptp4l -f /etc/linuxptp/ptp4l-%i.conf
 Restart=on-failure
 RestartSec=2
 

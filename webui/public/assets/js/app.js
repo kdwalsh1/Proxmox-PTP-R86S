@@ -1,8 +1,10 @@
 (function () {
   const csrfToken = document.querySelector('meta[name="csrf"]').content;
   const PHC_GROUP_LETTERS = 'ABCDEFGH';
-  let chart;
+  let charts = {};
   let phcGroups = {};
+  let savedConfig = { vlans: {}, profiles: {} };
+  let rendered = false;
 
   async function fetchJSON(path, options) {
     const res = await fetch(path, options);
@@ -27,8 +29,7 @@
     }
   }
 
-  function renderBanner(status) {
-    const el = document.getElementById('banner');
+  function renderBanner(status, el) {
     if (status.error) {
       el.className = 'banner banner-error';
       el.textContent = 'ptp4l failed to apply the current configuration: ' + status.error;
@@ -36,7 +37,7 @@
     }
     if (!status.ptp4l_running) {
       el.className = 'banner banner-idle';
-      el.textContent = 'ptp4l is not running. Enable at least one interface below.';
+      el.textContent = 'ptp4l is not running. Enable at least one interface for this profile below.';
       return;
     }
     if (status.is_grandmaster) {
@@ -72,16 +73,25 @@
     const hw = iface.phc_index !== null
       ? `HW clock ${phcGroups[iface.phc_index]} (#${iface.phc_index})`
       : 'software timestamping';
+    if (iface.is_vlan) {
+      return `VLAN of ${iface.parent} - ${speed} - ${hw}`;
+    }
     return `${iface.driver || 'unknown driver'} - ${speed} - ${hw}`;
   }
 
-  // Builds the interface cards from scratch. Only called once (on initial
-  // load) so it doesn't clobber checkbox/role choices the user hasn't saved
-  // yet - subsequent status polls go through updateInterfaceBadges instead.
+  function updateRoleVisibility(card) {
+    const profile = card.querySelector('select[data-field="profile"]').value;
+    card.querySelector('.iface-roles').style.display = profile ? '' : 'none';
+  }
+
+  // Builds the interface grid from scratch. Only called on initial load and
+  // after a successful save, so it doesn't clobber in-progress edits -
+  // periodic status polls go through updateInterfaceBadges instead.
   function renderInterfaces(status) {
     const container = document.getElementById('interfaces');
     container.innerHTML = '';
     phcGroups = computePhcGroups(status.interfaces);
+    const profileNames = Object.keys(status.profiles || {});
 
     (status.interfaces || []).forEach((iface) => {
       const card = document.createElement('div');
@@ -101,6 +111,26 @@
       state.className = 'port-state';
       state.style.display = 'none';
       card.appendChild(state);
+
+      const profileLabel = document.createElement('label');
+      profileLabel.className = 'iface-profile';
+      profileLabel.appendChild(document.createTextNode('Profile '));
+      const profileSelect = document.createElement('select');
+      profileSelect.dataset.iface = iface.name;
+      profileSelect.dataset.field = 'profile';
+      const noneOpt = document.createElement('option');
+      noneOpt.value = '';
+      noneOpt.textContent = 'Unassigned';
+      profileSelect.appendChild(noneOpt);
+      profileNames.forEach((name) => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        if (iface.profile === name) opt.selected = true;
+        profileSelect.appendChild(opt);
+      });
+      profileLabel.appendChild(profileSelect);
+      card.appendChild(profileLabel);
 
       const enabledLabel = document.createElement('label');
       enabledLabel.className = 'iface-toggle';
@@ -130,6 +160,9 @@
       });
       card.appendChild(roles);
 
+      profileSelect.addEventListener('change', () => updateRoleVisibility(card));
+      updateRoleVisibility(card);
+
       container.appendChild(card);
     });
 
@@ -137,8 +170,9 @@
   }
 
   // Updates the read-only parts of each card (link state, speed, port
-  // state) on every status poll, without touching the enable checkbox or
-  // role radios so unsaved user changes survive until Save is clicked.
+  // state) on every status poll, without touching the profile select,
+  // enable checkbox, or role radios so unsaved user changes survive until
+  // Save is clicked.
   function updateInterfaceBadges(status) {
     (status.interfaces || []).forEach((iface) => {
       const card = document.querySelector(`#interfaces .iface-card[data-iface="${iface.name}"]`);
@@ -164,32 +198,244 @@
     });
   }
 
-  function renderSettings(cfg) {
-    const form = document.getElementById('settings-form');
-    form.domainNumber.value = cfg.domainNumber;
-    form.priority1.value = cfg.priority1;
-    form.priority2.value = cfg.priority2;
-    populateIntervalSelect(form.logAnnounceInterval, cfg.logAnnounceInterval);
-    populateIntervalSelect(form.logSyncInterval, cfg.logSyncInterval);
-    populateIntervalSelect(form.logMinDelayReqInterval, cfg.logMinDelayReqInterval);
+  function renderVlans(status) {
+    const container = document.getElementById('vlans');
+    container.innerHTML = '';
+
+    const referenced = new Set();
+    (status.interfaces || []).forEach((iface) => {
+      if (iface.is_vlan && iface.profile) referenced.add(iface.name);
+    });
+
+    const vlans = status.vlans || [];
+    if (!vlans.length) {
+      container.innerHTML = '<p class="empty-hint">No VLANs configured.</p>';
+    }
+    vlans.forEach((vlan) => {
+      const row = document.createElement('div');
+      row.className = 'vlan-row';
+      row.dataset.vlan = vlan.name;
+
+      const label = document.createElement('span');
+      label.textContent = `${vlan.name} - VLAN ${vlan.vlan_id} on ${vlan.parent}`
+        + (vlan.exists ? '' : ' (creating...)');
+      row.appendChild(label);
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.textContent = 'Remove';
+      const inUse = referenced.has(vlan.name);
+      removeBtn.disabled = inUse;
+      removeBtn.title = inUse ? 'Unassign this VLAN from its PTP profile first' : '';
+      removeBtn.addEventListener('click', () => removeVlan(vlan.name));
+      row.appendChild(removeBtn);
+
+      container.appendChild(row);
+    });
+
+    const parentSelect = document.querySelector('#vlan-form select[name="parent"]');
+    const previous = parentSelect.value;
+    parentSelect.innerHTML = '';
+    (status.interfaces || []).filter((i) => !i.is_vlan).forEach((iface) => {
+      const opt = document.createElement('option');
+      opt.value = iface.name;
+      opt.textContent = iface.name;
+      parentSelect.appendChild(opt);
+    });
+    if (previous) parentSelect.value = previous;
   }
 
-  function collectInterfaces() {
-    const interfaces = {};
-    document.querySelectorAll('#interfaces .iface-card').forEach((card) => {
-      const checkbox = card.querySelector('input[data-field="enabled"]');
-      const role = card.querySelector('input[data-field="role"]:checked');
-      interfaces[checkbox.dataset.iface] = {
-        enabled: checkbox.checked,
-        role: role ? role.value : 'downstream',
+  function buildProfileCard(name, profile) {
+    const card = document.createElement('div');
+    card.className = 'profile-card';
+    card.dataset.profile = name;
+
+    const header = document.createElement('div');
+    header.className = 'profile-header';
+    const title = document.createElement('h3');
+    title.textContent = name;
+    header.appendChild(title);
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.textContent = 'Remove profile';
+    removeBtn.addEventListener('click', () => removeProfile(name));
+    header.appendChild(removeBtn);
+    card.appendChild(header);
+
+    const banner = document.createElement('div');
+    banner.className = 'banner profile-banner';
+    card.appendChild(banner);
+
+    const form = document.createElement('div');
+    form.className = 'settings-form profile-settings';
+    form.dataset.profile = name;
+
+    const fields = [
+      ['domainNumber', 'Domain number', 'number', 0, 127],
+      ['priority1', 'Priority 1', 'number', 0, 255],
+      ['priority2', 'Priority 2', 'number', 0, 255],
+      ['logAnnounceInterval', 'Announce interval', 'select'],
+      ['logSyncInterval', 'Sync interval', 'select'],
+      ['logMinDelayReqInterval', 'Min delay request interval', 'select'],
+    ];
+    fields.forEach(([key, labelText, type, lo, hi]) => {
+      const label = document.createElement('label');
+      label.appendChild(document.createTextNode(labelText));
+      let input;
+      if (type === 'select') {
+        input = document.createElement('select');
+        populateIntervalSelect(input, profile.config[key]);
+      } else {
+        input = document.createElement('input');
+        input.type = 'number';
+        input.min = String(lo);
+        input.max = String(hi);
+        input.value = String(profile.config[key]);
+        input.required = true;
+      }
+      input.name = key;
+      label.appendChild(input);
+      form.appendChild(label);
+    });
+    card.appendChild(form);
+
+    const canvas = document.createElement('canvas');
+    canvas.id = `offset-chart-${name}`;
+    canvas.height = 80;
+    card.appendChild(canvas);
+
+    renderBanner(profile, banner);
+    return card;
+  }
+
+  // Builds the profile cards from scratch. Only called on initial load and
+  // after a successful save - periodic status polls update banners only.
+  function renderProfiles(status) {
+    Object.values(charts).forEach((c) => c.destroy());
+    charts = {};
+
+    const container = document.getElementById('profiles');
+    container.innerHTML = '';
+
+    Object.entries(status.profiles || {}).forEach(([name, profile]) => {
+      const card = buildProfileCard(name, profile);
+      container.appendChild(card);
+      initChart(name);
+    });
+  }
+
+  function updatePhc2sysInfo(status) {
+    const el = document.getElementById('phc2sys-info');
+    const bridges = status.phc2sys || [];
+    if (!bridges.length) {
+      el.textContent = 'No clock bridging in use.';
+      return;
+    }
+    el.innerHTML = '';
+    bridges.forEach((b) => {
+      const row = document.createElement('div');
+      row.textContent = `${b.source} -> ${b.target}: ${b.active ? 'active' : 'inactive'}`;
+      el.appendChild(row);
+    });
+  }
+
+  function addProfileOption(name) {
+    document.querySelectorAll('#interfaces select[data-field="profile"]').forEach((select) => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      select.appendChild(opt);
+    });
+  }
+
+  function removeProfileOption(name) {
+    document.querySelectorAll('#interfaces select[data-field="profile"]').forEach((select) => {
+      if (select.value === name) {
+        select.value = '';
+        updateRoleVisibility(select.closest('.iface-card'));
+      }
+      const opt = select.querySelector(`option[value="${name}"]`);
+      if (opt) opt.remove();
+    });
+  }
+
+  function removeProfile(name) {
+    const card = document.querySelector(`#profiles .profile-card[data-profile="${name}"]`);
+    if (card) card.remove();
+    if (charts[name]) {
+      charts[name].destroy();
+      delete charts[name];
+    }
+    removeProfileOption(name);
+  }
+
+  function collectConfig() {
+    const vlans = {};
+    Object.entries(savedConfig.vlans || {}).forEach(([name, vcfg]) => {
+      vlans[name] = { ...vcfg };
+    });
+
+    const profiles = {};
+    document.querySelectorAll('#profiles .profile-settings').forEach((form) => {
+      const name = form.dataset.profile;
+      profiles[name] = {
+        domainNumber: parseInt(form.domainNumber.value, 10),
+        priority1: parseInt(form.priority1.value, 10),
+        priority2: parseInt(form.priority2.value, 10),
+        logAnnounceInterval: parseInt(form.logAnnounceInterval.value, 10),
+        logSyncInterval: parseInt(form.logSyncInterval.value, 10),
+        logMinDelayReqInterval: parseInt(form.logMinDelayReqInterval.value, 10),
+        interfaces: {},
       };
     });
-    return interfaces;
+
+    document.querySelectorAll('#interfaces .iface-card').forEach((card) => {
+      const name = card.dataset.iface;
+      const profile = card.querySelector('select[data-field="profile"]').value;
+      if (!profile || !(profile in profiles)) return;
+      const enabled = card.querySelector('input[data-field="enabled"]').checked;
+      const roleInput = card.querySelector('input[data-field="role"]:checked');
+      profiles[profile].interfaces[name] = {
+        enabled,
+        role: roleInput ? roleInput.value : 'downstream',
+      };
+    });
+
+    return { vlans, profiles };
   }
 
-  function initChart() {
-    const ctx = document.getElementById('offset-chart');
-    chart = new Chart(ctx, {
+  async function saveConfig(body, statusElId) {
+    const statusEl = document.getElementById(statusElId);
+    if (statusEl) statusEl.textContent = 'Saving...';
+
+    const { ok, data } = await fetchJSON('ajax.php?action=config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ csrf: csrfToken, vlans: body.vlans, profiles: body.profiles }),
+    });
+
+    if (!ok) {
+      if (statusEl) statusEl.textContent = 'Error: ' + (data.error || 'failed to save');
+      return false;
+    }
+
+    if (statusEl) statusEl.textContent = 'Saved.';
+    const cfg = await fetchJSON('ajax.php?action=config');
+    if (cfg.ok) savedConfig = cfg.data;
+    await refreshStatus(true);
+    return true;
+  }
+
+  async function removeVlan(name) {
+    const cfg = collectConfig();
+    delete cfg.vlans[name];
+    Object.values(cfg.profiles).forEach((p) => { delete p.interfaces[name]; });
+    await saveConfig(cfg, 'vlan-status');
+  }
+
+  function initChart(name) {
+    const ctx = document.getElementById(`offset-chart-${name}`);
+    charts[name] = new Chart(ctx, {
       type: 'line',
       data: {
         labels: [],
@@ -211,74 +457,125 @@
     });
   }
 
-  async function refreshStatus() {
-    const { ok, data } = await fetchJSON('ajax.php?action=status');
-    if (!ok) return;
-    renderBanner(data);
-    if (document.querySelector('#interfaces .iface-card')) {
-      updateInterfaceBadges(data);
-    } else {
-      renderInterfaces(data);
-    }
-  }
-
-  async function refreshHistory() {
-    const { ok, data } = await fetchJSON('ajax.php?action=history&minutes=60');
+  async function refreshHistory(name) {
+    const chart = charts[name];
+    if (!chart) return;
+    const { ok, data } = await fetchJSON(`ajax.php?action=history&minutes=60&profile=${encodeURIComponent(name)}`);
     if (!ok || !Array.isArray(data)) return;
     chart.data.labels = data.map((p) => new Date(p.ts * 1000).toLocaleTimeString());
     chart.data.datasets[0].data = data.map((p) => p.offset_ns);
     chart.update('none');
   }
 
+  async function refreshAllHistory() {
+    await Promise.all(Object.keys(charts).map(refreshHistory));
+  }
+
+  async function refreshStatus(forceRender) {
+    const { ok, data } = await fetchJSON('ajax.php?action=status');
+    if (!ok) return;
+
+    if (forceRender || !rendered) {
+      renderVlans(data);
+      renderInterfaces(data);
+      renderProfiles(data);
+      updatePhc2sysInfo(data);
+      rendered = true;
+      await refreshAllHistory();
+    } else {
+      updateInterfaceBadges(data);
+      Object.entries(data.profiles || {}).forEach(([name, profile]) => {
+        const card = document.querySelector(`#profiles .profile-card[data-profile="${name}"]`);
+        if (!card) return;
+        const banner = card.querySelector('.profile-banner');
+        if (banner) renderBanner(profile, banner);
+      });
+      updatePhc2sysInfo(data);
+    }
+  }
+
   document.getElementById('interfaces').addEventListener('change', (e) => {
     if (e.target.dataset.field === 'role' && e.target.value === 'uplink') {
-      document.querySelectorAll('input[data-field="role"][value="uplink"]').forEach((input) => {
-        if (input !== e.target) {
-          const card = input.closest('.iface-card');
-          card.querySelector('input[data-field="role"][value="downstream"]').checked = true;
-        }
+      const card = e.target.closest('.iface-card');
+      const profile = card.querySelector('select[data-field="profile"]').value;
+      document.querySelectorAll('#interfaces .iface-card').forEach((other) => {
+        if (other === card) return;
+        if (other.querySelector('select[data-field="profile"]').value !== profile) return;
+        const otherUplink = other.querySelector('input[data-field="role"][value="uplink"]');
+        const otherDownstream = other.querySelector('input[data-field="role"][value="downstream"]');
+        if (otherUplink && otherUplink.checked) otherDownstream.checked = true;
       });
     }
   });
 
-  document.getElementById('settings-form').addEventListener('submit', async (e) => {
+  document.getElementById('vlan-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.target;
-    const status = document.getElementById('save-status');
-    const body = {
-      csrf: csrfToken,
-      domainNumber: parseInt(form.domainNumber.value, 10),
-      priority1: parseInt(form.priority1.value, 10),
-      priority2: parseInt(form.priority2.value, 10),
-      logAnnounceInterval: parseInt(form.logAnnounceInterval.value, 10),
-      logSyncInterval: parseInt(form.logSyncInterval.value, 10),
-      logMinDelayReqInterval: parseInt(form.logMinDelayReqInterval.value, 10),
-      interfaces: collectInterfaces(),
+    const parent = form.parent.value;
+    const vlanId = parseInt(form.vlan_id.value, 10);
+    const status = document.getElementById('vlan-status');
+    if (!parent || !Number.isInteger(vlanId) || vlanId < 1 || vlanId > 4094) {
+      status.textContent = 'Enter a valid VLAN ID (1-4094).';
+      return;
+    }
+    const name = `${parent}.${vlanId}`;
+    const cfg = collectConfig();
+    if (cfg.vlans[name]) {
+      status.textContent = `${name} already exists.`;
+      return;
+    }
+    cfg.vlans[name] = { parent, vlan_id: vlanId };
+    const ok = await saveConfig(cfg, 'vlan-status');
+    if (ok) form.vlan_id.value = '';
+  });
+
+  document.getElementById('add-profile').addEventListener('click', () => {
+    let name = prompt('Profile name (letters, digits, - and _, up to 32 chars):');
+    if (!name) return;
+    name = name.trim();
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) {
+      alert('Invalid profile name - use only letters, digits, - and _, up to 32 characters.');
+      return;
+    }
+    if (document.querySelector(`#profiles .profile-card[data-profile="${name}"]`)) {
+      alert('A profile with that name already exists.');
+      return;
+    }
+
+    const used = new Set();
+    document.querySelectorAll('#profiles .profile-settings').forEach((form) => {
+      used.add(parseInt(form.domainNumber.value, 10));
+    });
+    let domain = 0;
+    while (used.has(domain) && domain <= 127) domain++;
+
+    const profile = {
+      config: {
+        domainNumber: domain,
+        priority1: 128,
+        priority2: 128,
+        logAnnounceInterval: 1,
+        logSyncInterval: 0,
+        logMinDelayReqInterval: 0,
+      },
+      ptp4l_running: false,
     };
 
-    status.textContent = 'Saving...';
-    const { ok, data } = await fetchJSON('ajax.php?action=config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    document.getElementById('profiles').appendChild(buildProfileCard(name, profile));
+    initChart(name);
+    addProfileOption(name);
+  });
 
-    if (ok) {
-      status.textContent = 'Saved.';
-      refreshStatus();
-    } else {
-      status.textContent = 'Error: ' + (data.error || 'failed to save');
-    }
+  document.getElementById('save-all').addEventListener('click', async () => {
+    await saveConfig(collectConfig(), 'save-status');
   });
 
   async function init() {
-    initChart();
-    const { ok, data } = await fetchJSON('ajax.php?action=config');
-    if (ok) renderSettings(data);
-    await refreshStatus();
-    await refreshHistory();
-    setInterval(refreshStatus, 3000);
-    setInterval(refreshHistory, 5000);
+    const cfg = await fetchJSON('ajax.php?action=config');
+    if (cfg.ok) savedConfig = cfg.data;
+    await refreshStatus(true);
+    setInterval(() => refreshStatus(false), 3000);
+    setInterval(refreshAllHistory, 5000);
   }
 
   init();
