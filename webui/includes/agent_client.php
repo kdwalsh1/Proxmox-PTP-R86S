@@ -20,7 +20,11 @@ function agent_request(array $config, string $method, string $path, ?array $body
 
     if ($body !== null) {
         $opts['http']['header'] .= "\r\nContent-Type: application/json";
-        $opts['http']['content'] = json_encode($body);
+        // json_decode(..., true) turns empty JSON objects ("vlans": {}) into
+        // empty PHP arrays, which json_encode() would otherwise turn back
+        // into "[]" instead of "{}". The config schema has no real JSON
+        // arrays, so forcing objects everywhere is always correct here.
+        $opts['http']['content'] = json_encode($body, JSON_FORCE_OBJECT);
     }
 
     $context = stream_context_create($opts);

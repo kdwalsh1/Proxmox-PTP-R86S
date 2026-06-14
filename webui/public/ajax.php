@@ -29,7 +29,9 @@ switch ($action) {
     case 'history':
         $minutes = isset($_GET['minutes']) ? (int) $_GET['minutes'] : 60;
         $minutes = max(1, min($minutes, 48 * 60));
-        [$status, $data] = agent_get($config, '/api/history?minutes=' . $minutes);
+        $profile = $_GET['profile'] ?? '';
+        $query = '/api/history?minutes=' . $minutes . '&profile=' . rawurlencode($profile);
+        [$status, $data] = agent_get($config, $query);
         http_response_code($status ?: 502);
         echo json_encode($data);
         break;
