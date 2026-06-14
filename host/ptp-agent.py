@@ -7,6 +7,7 @@ small token-authenticated HTTP API consumed by the ptp-webui LXC.
 Stdlib only. Runs as root via ptp-agent.service.
 """
 
+import ipaddress
 import json
 import os
 import re
@@ -32,6 +33,10 @@ EXCLUDE_PREFIXES = ("vmbr", "veth", "tap", "fwbr", "fwpr", "fwln", "docker", "br
 
 VLAN_ID_MIN, VLAN_ID_MAX = 1, 4094
 PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+MAX_UNICAST_TARGETS = 16
+
+NETWORK_TRANSPORTS = ("UDPv4", "UDPv6", "L2")
 
 DEFAULT_PROFILE = {
     "domainNumber": 0,
@@ -41,6 +46,14 @@ DEFAULT_PROFILE = {
     "logSyncInterval": 0,
     "logMinDelayReqInterval": 0,
     "interfaces": {},
+}
+
+DEFAULT_INTERFACE = {
+    "enabled": False,
+    "role": "downstream",
+    "networkTransport": "UDPv4",
+    "unicastListen": False,
+    "unicastTargets": [],
 }
 
 DEFAULT_DESIRED = {
@@ -64,6 +77,28 @@ def run(cmd, timeout=5):
         return r.returncode, r.stdout, r.stderr
     except Exception as e:
         return -1, "", str(e)
+
+
+def discover_addresses(name):
+    """IPv4/IPv6 addresses (incl. link-local) currently on an interface,
+    as "addr/prefixlen" strings - used by the dashboard to show what
+    address to put in a remote unicast peer's config."""
+    rc, out, _ = run(["ip", "-j", "addr", "show", "dev", name])
+    if rc != 0:
+        return []
+    try:
+        parsed = json.loads(out)
+    except ValueError:
+        return []
+    addresses = []
+    for entry in parsed:
+        for addr in entry.get("addr_info", []):
+            family = addr.get("family")
+            local = addr.get("local")
+            prefixlen = addr.get("prefixlen")
+            if family in ("inet", "inet6") and local and prefixlen is not None:
+                addresses.append(f"{local}/{prefixlen}")
+    return addresses
 
 
 def discover_physical_interfaces():
@@ -116,6 +151,8 @@ def discover_physical_interfaces():
                         phc = int(val)
         iface["phc_index"] = phc
 
+        iface["addresses"] = discover_addresses(name)
+
         interfaces.append(iface)
     return interfaces
 
@@ -153,6 +190,8 @@ def discover_vlan_interfaces(desired, physical_by_name):
 
         parent = physical_by_name.get(vcfg.get("parent"))
         iface["phc_index"] = parent["phc_index"] if parent else None
+
+        iface["addresses"] = discover_addresses(name)
 
         interfaces.append(iface)
     return interfaces
@@ -214,6 +253,23 @@ def reconcile_vlans(desired, state):
     state["last_vlans"] = dict(vlans)
 
 
+def merge_interfaces(ifaces):
+    """Fill in defaults (networkTransport/unicastListen/unicastTargets/...)
+    for each interface entry, so configs written before these fields
+    existed keep working unchanged."""
+    out = {}
+    if not isinstance(ifaces, dict):
+        return out
+    for name, icfg in ifaces.items():
+        full = dict(DEFAULT_INTERFACE)
+        if isinstance(icfg, dict):
+            for key in DEFAULT_INTERFACE:
+                if key in icfg:
+                    full[key] = icfg[key]
+        out[name] = full
+    return out
+
+
 def load_desired():
     try:
         with open(DESIRED_PATH) as f:
@@ -230,7 +286,7 @@ def load_desired():
         for key in PROFILE_SETTINGS_KEYS:
             if key in data:
                 profile[key] = data[key]
-        profile["interfaces"] = data.get("interfaces", {}) if isinstance(data.get("interfaces"), dict) else {}
+        profile["interfaces"] = merge_interfaces(data.get("interfaces", {}))
         data = {"vlans": {}, "profiles": {"default": profile}}
 
     merged = {"vlans": {}, "profiles": {}}
@@ -243,10 +299,23 @@ def load_desired():
                 for key in PROFILE_SETTINGS_KEYS:
                     if key in profile:
                         full[key] = profile[key]
-                full["interfaces"] = profile.get("interfaces", {}) if isinstance(profile.get("interfaces"), dict) else {}
+                full["interfaces"] = merge_interfaces(profile.get("interfaces", {}))
             merged["profiles"][name] = full
 
     return merged
+
+
+def validate_unicast_target(transport, addr):
+    if not isinstance(addr, str):
+        return False
+    try:
+        if transport == "UDPv4":
+            return isinstance(ipaddress.ip_address(addr), ipaddress.IPv4Address)
+        if transport == "UDPv6":
+            return isinstance(ipaddress.ip_address(addr), ipaddress.IPv6Address)
+    except ValueError:
+        return False
+    return bool(MAC_RE.match(addr))  # L2
 
 
 def validate_desired(data, interfaces):
@@ -325,6 +394,30 @@ def validate_desired(data, interfaces):
             role = cfg.get("role", "downstream")
             if role not in ("uplink", "downstream"):
                 raise ValueError(f"profile {profile_name}: interface {name} role must be 'uplink' or 'downstream'")
+
+            transport = cfg.get("networkTransport", DEFAULT_INTERFACE["networkTransport"])
+            if transport not in NETWORK_TRANSPORTS:
+                raise ValueError(
+                    f"profile {profile_name}: interface {name} networkTransport must be one of {NETWORK_TRANSPORTS}"
+                )
+
+            unicast_listen = bool(cfg.get("unicastListen", False))
+
+            targets = cfg.get("unicastTargets", [])
+            if not isinstance(targets, list) or len(targets) > MAX_UNICAST_TARGETS:
+                raise ValueError(
+                    f"profile {profile_name}: interface {name} unicastTargets must be a list of "
+                    f"at most {MAX_UNICAST_TARGETS} addresses"
+                )
+            if len(set(targets)) != len(targets):
+                raise ValueError(f"profile {profile_name}: interface {name} unicastTargets contains duplicates")
+            for addr in targets:
+                if not validate_unicast_target(transport, addr):
+                    raise ValueError(
+                        f"profile {profile_name}: interface {name} unicastTargets entry '{addr}' "
+                        f"is not a valid address for transport {transport}"
+                    )
+
             if enabled:
                 if role == "uplink":
                     uplinks += 1
@@ -334,7 +427,13 @@ def validate_desired(data, interfaces):
                         f"('{assigned[name]}' and '{profile_name}')"
                     )
                 assigned[name] = profile_name
-            out_ifaces[name] = {"enabled": enabled, "role": role}
+            out_ifaces[name] = {
+                "enabled": enabled,
+                "role": role,
+                "networkTransport": transport,
+                "unicastListen": unicast_listen,
+                "unicastTargets": list(targets),
+            }
 
         if uplinks > 1:
             raise ValueError(f"profile {profile_name}: only one interface may be configured as the uplink")
@@ -406,10 +505,26 @@ def render_ptp4l_conf(profile_name, profile_cfg, interfaces):
     all_hw = all(iface["phc_index"] is not None for _, _, iface in enabled)
     lines.append(f"time_stamping\t\t{'hardware' if all_hw else 'software'}")
 
+    unicast_tables = []
     for name, cfg, iface in enabled:
         lines.append(f"\n[{name}]")
         if cfg.get("role") == "downstream":
             lines.append("serverOnly\t\t1")
+        transport = cfg.get("networkTransport", DEFAULT_INTERFACE["networkTransport"])
+        lines.append(f"network_transport\t{transport}")
+        if cfg.get("unicastListen"):
+            lines.append("unicast_listen\t\t1")
+        targets = cfg.get("unicastTargets") or []
+        if targets:
+            table_id = len(unicast_tables) + 1
+            lines.append(f"unicast_master_table\t{table_id}")
+            unicast_tables.append((table_id, transport, targets))
+
+    for table_id, transport, targets in unicast_tables:
+        lines.append("\n[unicast_master_table]")
+        lines.append(f"table_id\t\t{table_id}")
+        for addr in targets:
+            lines.append(f"{transport}\t\t\t{addr}")
 
     return "\n".join(lines) + "\n"
 
@@ -613,12 +728,25 @@ def build_status(desired, interfaces, profile_statuses, phc2sys_bridges):
     assignment = {}
     for pname, pcfg in desired["profiles"].items():
         for iname, icfg in pcfg["interfaces"].items():
-            assignment[iname] = (pname, icfg.get("role", "downstream"), bool(icfg.get("enabled")))
+            assignment[iname] = (
+                pname,
+                icfg.get("role", "downstream"),
+                bool(icfg.get("enabled")),
+                icfg.get("networkTransport", DEFAULT_INTERFACE["networkTransport"]),
+                bool(icfg.get("unicastListen")),
+                icfg.get("unicastTargets", []),
+            )
 
     iface_list = []
     for i in interfaces:
         a = assignment.get(i["name"])
-        profile, role, enabled = a if a else (None, "downstream", False)
+        if a:
+            profile, role, enabled, network_transport, unicast_listen, unicast_targets = a
+        else:
+            profile, role, enabled = None, "downstream", False
+            network_transport = DEFAULT_INTERFACE["networkTransport"]
+            unicast_listen = False
+            unicast_targets = []
         port_state = None
         if profile and enabled:
             port_state = profile_statuses.get(profile, {}).get("port_states", {}).get(i["name"])
@@ -629,11 +757,15 @@ def build_status(desired, interfaces, profile_statuses, phc2sys_bridges):
             "link": i["link"],
             "speed_mbps": i["speed_mbps"],
             "phc_index": i["phc_index"],
+            "addresses": i.get("addresses", []),
             "is_vlan": i.get("is_vlan", False),
             "parent": i.get("parent"),
             "profile": profile,
             "enabled": enabled,
             "role": role,
+            "networkTransport": network_transport,
+            "unicastListen": unicast_listen,
+            "unicastTargets": unicast_targets,
             "port_state": port_state,
         })
 

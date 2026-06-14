@@ -73,10 +73,11 @@
     const hw = iface.phc_index !== null
       ? `HW clock ${phcGroups[iface.phc_index]} (#${iface.phc_index})`
       : 'software timestamping';
+    const addrs = (iface.addresses && iface.addresses.length) ? ` - ${iface.addresses.join(', ')}` : '';
     if (iface.is_vlan) {
-      return `VLAN of ${iface.parent} - ${speed} - ${hw}`;
+      return `VLAN of ${iface.parent} - ${speed} - ${hw}${addrs}`;
     }
-    return `${iface.driver || 'unknown driver'} - ${speed} - ${hw}`;
+    return `${iface.driver || 'unknown driver'} - ${speed} - ${hw}${addrs}`;
   }
 
   function updateRoleVisibility(card) {
@@ -158,6 +159,53 @@
         wrap.appendChild(document.createTextNode(' ' + label));
         roles.appendChild(wrap);
       });
+
+      const transportLabel = document.createElement('label');
+      transportLabel.className = 'iface-transport';
+      transportLabel.appendChild(document.createTextNode('Transport '));
+      const transportSelect = document.createElement('select');
+      transportSelect.dataset.iface = iface.name;
+      transportSelect.dataset.field = 'transport';
+      [['UDPv4', 'IPv4 (UDPv4)'], ['UDPv6', 'IPv6 (UDPv6)'], ['L2', 'Ethernet (L2)']].forEach(([value, label]) => {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = label;
+        if ((iface.networkTransport || 'UDPv4') === value) opt.selected = true;
+        transportSelect.appendChild(opt);
+      });
+      transportLabel.appendChild(transportSelect);
+      roles.appendChild(transportLabel);
+
+      const unicastListenLabel = document.createElement('label');
+      unicastListenLabel.className = 'iface-toggle';
+      const unicastListenInput = document.createElement('input');
+      unicastListenInput.type = 'checkbox';
+      unicastListenInput.checked = !!iface.unicastListen;
+      unicastListenInput.dataset.iface = iface.name;
+      unicastListenInput.dataset.field = 'unicastListen';
+      unicastListenLabel.appendChild(unicastListenInput);
+      unicastListenLabel.appendChild(document.createTextNode(' Allow unicast clients (this device can act as a unicast master)'));
+      roles.appendChild(unicastListenLabel);
+
+      const targetsLabel = document.createElement('label');
+      targetsLabel.className = 'iface-unicast-targets';
+      targetsLabel.appendChild(document.createTextNode('Unicast master targets (one address per line)'));
+      const targetsArea = document.createElement('textarea');
+      targetsArea.dataset.iface = iface.name;
+      targetsArea.dataset.field = 'unicastTargets';
+      targetsArea.rows = 2;
+      targetsArea.value = (iface.unicastTargets || []).join('\n');
+      const setTargetsPlaceholder = () => {
+        const t = transportSelect.value;
+        targetsArea.placeholder = t === 'UDPv6' ? 'e.g. 2001:db8::1'
+          : t === 'L2' ? 'e.g. 00:11:22:33:44:55'
+          : 'e.g. 192.0.2.1';
+      };
+      setTargetsPlaceholder();
+      transportSelect.addEventListener('change', setTargetsPlaceholder);
+      targetsLabel.appendChild(targetsArea);
+      roles.appendChild(targetsLabel);
+
       card.appendChild(roles);
 
       profileSelect.addEventListener('change', () => updateRoleVisibility(card));
@@ -387,9 +435,14 @@
       if (!profile || !(profile in profiles)) return;
       const enabled = card.querySelector('input[data-field="enabled"]').checked;
       const roleInput = card.querySelector('input[data-field="role"]:checked');
+      const unicastTargets = card.querySelector('textarea[data-field="unicastTargets"]').value
+        .split('\n').map((s) => s.trim()).filter(Boolean);
       profiles[profile].interfaces[name] = {
         enabled,
         role: roleInput ? roleInput.value : 'downstream',
+        networkTransport: card.querySelector('select[data-field="transport"]').value,
+        unicastListen: card.querySelector('input[data-field="unicastListen"]').checked,
+        unicastTargets,
       };
     });
 

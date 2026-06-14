@@ -179,6 +179,33 @@ via `phc2sys -s <reference> -c /dev/ptp<N> -O 0`, and if the reference is
 itself a PHC, `CLOCK_REALTIME` is also bridged from it (`-m`). The "Clock
 synchronization" section of the dashboard lists the active bridges.
 
+### Per-interface transport (IPv4/IPv6/L2) and unicast PTP
+
+`ptp4l`'s `network_transport` is a per-port option, so each interface in a
+profile has its own **Transport** dropdown: `UDPv4` (default), `UDPv6`, or
+`L2` (raw Ethernet/802.3 - no IP needed). A profile/domain becomes
+"dual-stack" by *mixing* transports across its ports (e.g. an `UDPv6`
+uplink and a `UDPv4` downstream VLAN in the same profile) - a single port
+always speaks exactly one transport. For `UDPv6`, the interface needs an
+IPv6 address; a link-local (`fe80::/10`) address, which Linux assigns
+automatically, is enough for link-local multicast/unicast. Each interface
+card shows its current IPv4/IPv6 addresses for reference.
+
+Each interface also has two unicast options:
+
+- **Unicast master targets** (one address per line, matching the port's
+  transport - IPv4/IPv6 address, or a MAC address for `L2`): when set,
+  this port operates as a *unicast slave*, requesting PTP service from
+  those specific addresses via `unicast_master_table`. Use this when an
+  upstream grandmaster is only reachable via unicast (e.g. across a routed
+  network where multicast PTP doesn't propagate).
+- **Allow unicast clients**: sets `unicast_listen 1` on this port, letting
+  it dynamically grant unicast service to any slave that negotiates with
+  it. `ptp4l` has no static "push to these slave addresses" master config -
+  to use this device as a unicast master, enable this checkbox here, then
+  configure *this interface's address* (shown on its card) as a unicast
+  master target on the remote slave.
+
 ## Networking caveat
 
 PTP relies on hardware timestamps and (for the `E2E` delay mechanism used
