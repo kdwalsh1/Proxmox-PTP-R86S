@@ -39,3 +39,10 @@ docs/       Architecture, setup walkthrough, and troubleshooting notes
 
 See [docs/setup.md](docs/setup.md) for prerequisites and the setup
 walkthrough.
+
+## Acknowledgements
+
+Thanks to [Chris Lapp](https://github.com/chrisjlapp) (author of
+[Clustertime](https://github.com/chrisjlapp/Clustertime), a PTP
+unicast-to-multicast relay) for valuable feedback that shaped the
+per-interface IPv4/IPv6/L2 transport and unicast PTP support.
