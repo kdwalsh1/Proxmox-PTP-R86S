@@ -725,6 +725,8 @@ def poll_loop():
                 STATE["status"] = status
                 STATE["desired"] = desired
                 STATE["interfaces"] = interfaces
+                STATE["profile_statuses"] = profile_statuses
+                STATE["phc2sys_bridges"] = phc2sys_bridges
 
             for name, pstatus in profile_statuses.items():
                 if pstatus.get("master_offset_ns") is not None:
@@ -803,6 +805,17 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json(500, {"error": str(e)})
             return
+
+        # Rebuild status immediately so the dashboard's vlans/interfaces/
+        # profile config reflect this change right away, rather than
+        # showing stale data until the next poll cycle (up to
+        # POLL_INTERVAL seconds later).
+        interfaces = discover_interfaces(validated)
+        with STATE_LOCK:
+            profile_statuses = STATE.get("profile_statuses", {})
+            phc2sys_bridges = STATE.get("phc2sys_bridges", [])
+            STATE["status"] = build_status(validated, interfaces, profile_statuses, phc2sys_bridges)
+            STATE["interfaces"] = interfaces
 
         self._send_json(200, {"ok": True})
 

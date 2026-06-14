@@ -202,11 +202,6 @@
     const container = document.getElementById('vlans');
     container.innerHTML = '';
 
-    const referenced = new Set();
-    (status.interfaces || []).forEach((iface) => {
-      if (iface.is_vlan && iface.profile) referenced.add(iface.name);
-    });
-
     const vlans = status.vlans || [];
     if (!vlans.length) {
       container.innerHTML = '<p class="empty-hint">No VLANs configured.</p>';
@@ -224,9 +219,6 @@
       const removeBtn = document.createElement('button');
       removeBtn.type = 'button';
       removeBtn.textContent = 'Remove';
-      const inUse = referenced.has(vlan.name);
-      removeBtn.disabled = inUse;
-      removeBtn.title = inUse ? 'Unassign this VLAN from its PTP profile first' : '';
       removeBtn.addEventListener('click', () => removeVlan(vlan.name));
       row.appendChild(removeBtn);
 
