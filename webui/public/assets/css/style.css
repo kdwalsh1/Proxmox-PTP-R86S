@@ -129,6 +129,10 @@ h2 {
   color: #4b5563;
 }
 
+.iface-roles .role-disabled {
+  color: #9ca3af;
+}
+
 .iface-profile {
   display: flex;
   align-items: center;
@@ -250,6 +254,34 @@ h2 {
 
 .profile-card canvas {
   max-height: 200px;
+}
+
+/* GPS grandmaster source */
+
+.gps-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.gps-summary .banner {
+  margin-bottom: 0;
+  padding: 0.5rem 0.85rem;
+}
+
+.gps-details {
+  font-size: 0.85rem;
+  color: #4b5563;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+}
+
+.gps-map {
+  height: 220px;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
 }
 
 /* Clock synchronization */

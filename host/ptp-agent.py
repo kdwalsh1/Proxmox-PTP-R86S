@@ -40,6 +40,7 @@ DEFAULT_PROFILE = {
     "logAnnounceInterval": 1,
     "logSyncInterval": 0,
     "logMinDelayReqInterval": 0,
+    "clockSource": "uplink",
     "interfaces": {},
 }
 
@@ -51,7 +52,18 @@ DEFAULT_DESIRED = {
 PROFILE_SETTINGS_KEYS = (
     "domainNumber", "priority1", "priority2",
     "logAnnounceInterval", "logSyncInterval", "logMinDelayReqInterval",
+    "clockSource",
 )
+
+# clockClass/clockAccuracy/timeSource used for a "gps" clockSource profile.
+# GPS_CLOCK_CLASS_LOCKED (6) means "traceable to a primary reference
+# (GNSS)"; GPS_CLOCK_CLASS_UNLOCKED (248) means "free running, do not
+# treat as traceable" - used once the GPS fix/PPS discipline is lost.
+# clockAccuracy 0x21 is "accurate to within 100ns"; timeSource 0x20 is GPS.
+GPS_CLOCK_CLASS_LOCKED = 6
+GPS_CLOCK_CLASS_UNLOCKED = 248
+GPS_CLOCK_ACCURACY = "0x21"
+GPS_TIME_SOURCE = "0x20"
 
 TOKEN = None
 STATE_LOCK = threading.Lock()
@@ -309,6 +321,11 @@ def validate_desired(data, interfaces):
                 raise ValueError(f"profile {profile_name}: {key} must be an integer between -7 and 4")
             out[key] = v
 
+        clock_source = pcfg.get("clockSource", DEFAULT_PROFILE["clockSource"])
+        if clock_source not in ("uplink", "gps"):
+            raise ValueError(f"profile {profile_name}: clockSource must be 'uplink' or 'gps'")
+        out["clockSource"] = clock_source
+
         ifaces = pcfg.get("interfaces", {})
         if not isinstance(ifaces, dict):
             raise ValueError(f"profile {profile_name}: interfaces must be an object")
@@ -338,6 +355,8 @@ def validate_desired(data, interfaces):
 
         if uplinks > 1:
             raise ValueError(f"profile {profile_name}: only one interface may be configured as the uplink")
+        if clock_source == "gps" and uplinks > 0:
+            raise ValueError(f"profile {profile_name}: a profile with clockSource 'gps' cannot have an uplink interface")
 
         out["interfaces"] = out_ifaces
         out_profiles[profile_name] = out
@@ -405,6 +424,14 @@ def render_ptp4l_conf(profile_name, profile_cfg, interfaces):
     # software for all of them so ptp4l doesn't fail to parse the config.
     all_hw = all(iface["phc_index"] is not None for _, _, iface in enabled)
     lines.append(f"time_stamping\t\t{'hardware' if all_hw else 'software'}")
+
+    if profile_cfg.get("clockSource") == "gps":
+        # Initial values only - apply_grandmaster_settings() updates
+        # clockClass live via `pmc SET GRANDMASTER_SETTINGS_NP` once GPS/PPS
+        # lock status is known, without restarting ptp4l.
+        lines.append(f"clockClass\t\t{GPS_CLOCK_CLASS_UNLOCKED}")
+        lines.append(f"clockAccuracy\t\t{GPS_CLOCK_ACCURACY}")
+        lines.append(f"timeSource\t\t{GPS_TIME_SOURCE}")
 
     for name, cfg, iface in enabled:
         lines.append(f"\n[{name}]")
@@ -539,6 +566,98 @@ def query_profile_status(profile_name, profile_cfg, interfaces, state):
     return result
 
 
+def query_gps_status():
+    """Read GPS fix/position from gpsd (via gpspipe) and PPS/NMEA refclock
+    health from chrony.
+
+    Returns None if gpsd/chrony aren't installed or gpsd has no data yet -
+    this is the normal case on the R86S, which has neither installed, so
+    callers must treat None as "no local GPS source" rather than an error
+    (matches this file's existing degrade-gracefully convention).
+    """
+    rc, out, _ = run(["gpspipe", "-w", "-n", "8"], timeout=5)
+    if rc != 0:
+        return None
+
+    tpv, sky = None, None
+    for line in out.splitlines():
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if msg.get("class") == "TPV":
+            tpv = msg
+        elif msg.get("class") == "SKY":
+            sky = msg
+
+    if tpv is None:
+        return None
+
+    result = {
+        "fix_mode": tpv.get("mode"),  # 0/1 = no fix, 2 = 2D, 3 = 3D
+        "lat": tpv.get("lat"),
+        "lon": tpv.get("lon"),
+        "alt_m": tpv.get("altHAE", tpv.get("alt")),
+        "gps_time": tpv.get("time"),
+        "satellites_used": None,
+        "satellites_visible": None,
+        "pps_reachable": False,
+        "pps_selected": False,
+    }
+    if sky and isinstance(sky.get("satellites"), list):
+        sats = sky["satellites"]
+        result["satellites_visible"] = len(sats)
+        result["satellites_used"] = sum(1 for s in sats if s.get("used"))
+
+    # `chronyc sources` (plain text, not -c/CSV mode - the CSV column order
+    # for `sources` isn't documented anywhere reliable, whereas the M/S
+    # prefix of the normal table is: M='#' for a locally-connected
+    # refclock, S='*' for the currently-selected best source).
+    rc, out, _ = run(["chronyc", "sources"], timeout=5)
+    if rc == 0:
+        for line in out.splitlines():
+            if len(line) < 3 or line[0] != "#":
+                continue
+            state_char = line[1]
+            name = line[2:].split()[0] if line[2:].split() else ""
+            if name == "PPS":
+                result["pps_reachable"] = state_char in ("*", "+", "-")
+                result["pps_selected"] = state_char == "*"
+
+    return result
+
+
+def apply_grandmaster_settings(desired, profile_statuses, gps_status, state):
+    """For each 'gps' clockSource profile, push the right clockClass live
+    via `pmc SET GRANDMASTER_SETTINGS_NP` (no ptp4l restart needed) instead
+    of leaving the static value `render_ptp4l_conf` wrote at config-apply
+    time - so a lost GPS fix/PPS lock is reflected within one poll tick
+    rather than only at the next config change.
+    """
+    applied = state.setdefault("gm_settings_applied", {})
+    locked = bool(gps_status and gps_status.get("fix_mode", 0) >= 2 and gps_status.get("pps_selected"))
+    desired_class = GPS_CLOCK_CLASS_LOCKED if locked else GPS_CLOCK_CLASS_UNLOCKED
+
+    for name, profile_cfg in desired["profiles"].items():
+        if profile_cfg.get("clockSource") != "gps":
+            continue
+        if not profile_statuses.get(name, {}).get("ptp4l_running"):
+            continue
+        if applied.get(name) == desired_class:
+            continue
+
+        uds = f"/var/run/ptp4l-{name}"
+        cmd = (
+            f"SET GRANDMASTER_SETTINGS_NP clockClass {desired_class} "
+            f"clockAccuracy {GPS_CLOCK_ACCURACY} offsetScaledLogVariance 0xffff "
+            f"currentUtcOffset 37 leap61 0 leap59 0 currentUtcOffsetValid 1 "
+            f"ptpTimescale 1 timeTraceable 1 frequencyTraceable 0 "
+            f"timeSource {GPS_TIME_SOURCE}"
+        )
+        if run_pmc(uds, cmd) is not None:
+            applied[name] = desired_class
+
+
 def reconcile_phc2sys(desired, interfaces, profile_statuses, state):
     """Keep every PHC in play disciplined relative to a single reference clock.
 
@@ -609,7 +728,7 @@ def reconcile_phc2sys(desired, interfaces, profile_statuses, state):
     return bridges
 
 
-def build_status(desired, interfaces, profile_statuses, phc2sys_bridges):
+def build_status(desired, interfaces, profile_statuses, phc2sys_bridges, gps_status):
     assignment = {}
     for pname, pcfg in desired["profiles"].items():
         for iname, icfg in pcfg["interfaces"].items():
@@ -668,6 +787,7 @@ def build_status(desired, interfaces, profile_statuses, phc2sys_bridges):
         "vlans": vlan_list,
         "profiles": profiles_out,
         "phc2sys": phc2sys_bridges,
+        "gps": gps_status,
     }
 
 
@@ -718,8 +838,11 @@ def poll_loop():
                 for name, profile_cfg in desired["profiles"].items()
             }
 
+            gps_status = query_gps_status()
+            apply_grandmaster_settings(desired, profile_statuses, gps_status, state)
+
             phc2sys_bridges = reconcile_phc2sys(desired, interfaces, profile_statuses, state)
-            status = build_status(desired, interfaces, profile_statuses, phc2sys_bridges)
+            status = build_status(desired, interfaces, profile_statuses, phc2sys_bridges, gps_status)
 
             with STATE_LOCK:
                 STATE["status"] = status
@@ -727,6 +850,7 @@ def poll_loop():
                 STATE["interfaces"] = interfaces
                 STATE["profile_statuses"] = profile_statuses
                 STATE["phc2sys_bridges"] = phc2sys_bridges
+                STATE["gps_status"] = gps_status
 
             for name, pstatus in profile_statuses.items():
                 if pstatus.get("master_offset_ns") is not None:
@@ -814,7 +938,8 @@ class Handler(BaseHTTPRequestHandler):
         with STATE_LOCK:
             profile_statuses = STATE.get("profile_statuses", {})
             phc2sys_bridges = STATE.get("phc2sys_bridges", [])
-            STATE["status"] = build_status(validated, interfaces, profile_statuses, phc2sys_bridges)
+            gps_status = STATE.get("gps_status")
+            STATE["status"] = build_status(validated, interfaces, profile_statuses, phc2sys_bridges, gps_status)
             STATE["interfaces"] = interfaces
 
         self._send_json(200, {"ok": True})

@@ -1,0 +1,9 @@
+# /etc/default/gpsd
+#
+# Deployed by pi5-gm/setup.sh. Manual edits will be overwritten the next
+# time setup.sh is re-run.
+
+START_DAEMON="true"
+USBAUTO="false"
+DEVICES="${UART_DEV}"
+GPSD_OPTIONS="-n"

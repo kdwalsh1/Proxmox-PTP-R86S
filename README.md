@@ -25,17 +25,26 @@ for configuration and monitoring.
   sub-interfaces and one or more independent PTP "profiles" (domains), each
   with its own interfaces/roles and domain/priority/interval settings, see
   per-profile grandmaster status, and graph offset-from-GM over time.
+- Optionally provide the grandmaster itself: `pi5-gm/` deploys the same
+  `ptp-agent`/dashboard onto a Raspberry Pi 5 with a GPS/GNSS + PPS module,
+  where a profile's clock source can be set to "Local GPS + PPS" (GM) or
+  "Uplink interface" (boundary clock) - same dashboard, same code, either
+  role - for the R86S to sync its uplink to.
 
 ## Repository layout
 
 ```
 setup.sh    One-shot install/provisioning script (run as root on Proxmox)
-host/       Files deployed on the Proxmox host (ptp-agent daemon, systemd units, ptp4l.conf template)
-webui/      PHP web dashboard, deployed into a new LXC
+host/       Files deployed on the Proxmox host / Pi5 (ptp-agent daemon, systemd units, ptp4l.conf template)
+webui/      PHP web dashboard, deployed into a new LXC (R86S) or locally (Pi5)
+scripts/    Shared install helpers sourced by setup.sh and pi5-gm/setup.sh
+pi5-gm/     One-shot setup.sh/install.sh + GPS provisioning for a Pi5 GM/BC device
 docs/       Architecture, setup walkthrough, and troubleshooting notes
 ```
 
 ## Getting started
 
 See [docs/setup.md](docs/setup.md) for prerequisites and the setup
-walkthrough.
+walkthrough, and [docs/pi5-gps-grandmaster.md](docs/pi5-gps-grandmaster.md)
+for setting up a Pi5 + GPS grandmaster/boundary-clock device (installable
+with a single `wget` + run, no manual clone needed) to sync the R86S to.

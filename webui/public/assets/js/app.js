@@ -84,6 +84,29 @@
     card.querySelector('.iface-roles').style.display = profile ? '' : 'none';
   }
 
+  function profileClockSource(name) {
+    const form = document.querySelector(`#profiles .profile-settings[data-profile="${name}"]`);
+    const select = form && form.querySelector('[name="clockSource"]');
+    return select ? select.value : 'uplink';
+  }
+
+  // A profile sourced from local GPS/PPS is self-sourced - it can't also
+  // have an uplink (the agent rejects that server-side too, see
+  // validate_desired() in ptp-agent.py). Disable the uplink radio on every
+  // interface currently assigned to such a profile as a client-side hint.
+  function updateClockSourceVisibility(name) {
+    const isGps = profileClockSource(name) === 'gps';
+    document.querySelectorAll('#interfaces .iface-card').forEach((card) => {
+      if (card.querySelector('select[data-field="profile"]').value !== name) return;
+      const uplinkInput = card.querySelector('input[data-field="role"][value="uplink"]');
+      const downstreamInput = card.querySelector('input[data-field="role"][value="downstream"]');
+      if (!uplinkInput) return;
+      uplinkInput.disabled = isGps;
+      uplinkInput.closest('label').classList.toggle('role-disabled', isGps);
+      if (isGps && uplinkInput.checked) downstreamInput.checked = true;
+    });
+  }
+
   // Builds the interface grid from scratch. Only called on initial load and
   // after a successful save, so it doesn't clobber in-progress edits -
   // periodic status polls go through updateInterfaceBadges instead.
@@ -160,7 +183,10 @@
       });
       card.appendChild(roles);
 
-      profileSelect.addEventListener('change', () => updateRoleVisibility(card));
+      profileSelect.addEventListener('change', () => {
+        updateRoleVisibility(card);
+        updateClockSourceVisibility(profileSelect.value);
+      });
       updateRoleVisibility(card);
 
       container.appendChild(card);
@@ -269,6 +295,7 @@
       ['logAnnounceInterval', 'Announce interval', 'select'],
       ['logSyncInterval', 'Sync interval', 'select'],
       ['logMinDelayReqInterval', 'Min delay request interval', 'select'],
+      ['clockSource', 'Clock source', 'clocksource'],
     ];
     fields.forEach(([key, labelText, type, lo, hi]) => {
       const label = document.createElement('label');
@@ -277,6 +304,16 @@
       if (type === 'select') {
         input = document.createElement('select');
         populateIntervalSelect(input, profile.config[key]);
+      } else if (type === 'clocksource') {
+        input = document.createElement('select');
+        [['uplink', 'Uplink interface'], ['gps', 'Local GPS + PPS']].forEach(([value, text]) => {
+          const opt = document.createElement('option');
+          opt.value = value;
+          opt.textContent = text;
+          if (profile.config[key] === value) opt.selected = true;
+          input.appendChild(opt);
+        });
+        input.addEventListener('change', () => updateClockSourceVisibility(name));
       } else {
         input = document.createElement('input');
         input.type = 'number';
@@ -314,6 +351,10 @@
       container.appendChild(card);
       initChart(name);
     });
+
+    // Interfaces are rendered before profiles, so re-apply clock-source
+    // driven uplink-disabling now that the profile cards actually exist.
+    Object.keys(status.profiles || {}).forEach(updateClockSourceVisibility);
   }
 
   function updatePhc2sysInfo(status) {
@@ -329,6 +370,86 @@
       row.textContent = `${b.source} -> ${b.target}: ${b.active ? 'active' : 'inactive'}`;
       el.appendChild(row);
     });
+  }
+
+  // Leaflet is only needed on boxes with a local GPS source (the Pi5, not
+  // the R86S), so it's loaded from CDN lazily on first GPS data rather
+  // than unconditionally in index.php.
+  let leafletLoading = null;
+  function ensureLeaflet() {
+    if (window.L) return Promise.resolve();
+    if (leafletLoading) return leafletLoading;
+    leafletLoading = new Promise((resolve) => {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(link);
+      const script = document.createElement('script');
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      script.onload = resolve;
+      document.head.appendChild(script);
+    });
+    return leafletLoading;
+  }
+
+  const FIX_MODE_LABELS = { 0: 'Unknown', 1: 'No fix', 2: '2D fix', 3: '3D fix' };
+  let gpsMap = null;
+  let gpsMarker = null;
+
+  // GPS is a device-level status (not per-profile), so the whole panel is
+  // hidden whenever status.gps is null - which is always, on the R86S.
+  async function renderGpsPanel(status) {
+    const panel = document.getElementById('gps-panel');
+    const gps = status.gps;
+    if (!gps) {
+      panel.style.display = 'none';
+      return;
+    }
+    panel.style.display = '';
+
+    const summary = document.getElementById('gps-summary');
+    summary.innerHTML = '';
+
+    const locked = (gps.fix_mode || 0) >= 2;
+    const fixBadge = document.createElement('span');
+    fixBadge.className = 'banner ' + (locked ? 'banner-gm' : 'banner-unsynced');
+    fixBadge.textContent = (FIX_MODE_LABELS[gps.fix_mode] || 'Unknown')
+      + (gps.satellites_used !== null && gps.satellites_used !== undefined
+        ? ` - ${gps.satellites_used}/${gps.satellites_visible} satellites` : '');
+    summary.appendChild(fixBadge);
+
+    const ppsBadge = document.createElement('span');
+    ppsBadge.className = 'banner ' + (gps.pps_selected ? 'banner-gm' : gps.pps_reachable ? 'banner-unsynced' : 'banner-idle');
+    ppsBadge.textContent = gps.pps_selected
+      ? 'PPS selected (disciplining clock)'
+      : gps.pps_reachable ? 'PPS reachable, not selected' : 'PPS not reachable';
+    summary.appendChild(ppsBadge);
+
+    const hasFix = gps.lat !== null && gps.lat !== undefined && gps.lon !== null && gps.lon !== undefined;
+    const details = document.createElement('div');
+    details.className = 'gps-details';
+    details.textContent = hasFix
+      ? `Lat ${gps.lat.toFixed(6)}, Lon ${gps.lon.toFixed(6)}`
+        + (gps.alt_m !== null && gps.alt_m !== undefined ? `, Alt ${Number(gps.alt_m).toFixed(1)} m` : '')
+        + (gps.gps_time ? ` - GPS time ${gps.gps_time}` : '')
+      : 'No position fix yet.';
+    summary.appendChild(details);
+
+    if (!hasFix) return;
+
+    await ensureLeaflet();
+    const mapEl = document.getElementById('gps-map');
+    if (!gpsMap) {
+      gpsMap = L.map(mapEl).setView([gps.lat, gps.lon], 15);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
+        maxZoom: 19,
+      }).addTo(gpsMap);
+      gpsMarker = L.marker([gps.lat, gps.lon]).addTo(gpsMap);
+    } else {
+      gpsMap.setView([gps.lat, gps.lon]);
+      gpsMarker.setLatLng([gps.lat, gps.lon]);
+    }
   }
 
   function addProfileOption(name) {
@@ -377,6 +498,7 @@
         logAnnounceInterval: parseInt(form.querySelector('[name="logAnnounceInterval"]').value, 10),
         logSyncInterval: parseInt(form.querySelector('[name="logSyncInterval"]').value, 10),
         logMinDelayReqInterval: parseInt(form.querySelector('[name="logMinDelayReqInterval"]').value, 10),
+        clockSource: form.querySelector('[name="clockSource"]').value,
         interfaces: {},
       };
     });
@@ -472,6 +594,7 @@
       renderInterfaces(data);
       renderProfiles(data);
       updatePhc2sysInfo(data);
+      renderGpsPanel(data);
       rendered = true;
       await refreshAllHistory();
     } else {
@@ -483,6 +606,7 @@
         if (banner) renderBanner(profile, banner);
       });
       updatePhc2sysInfo(data);
+      renderGpsPanel(data);
     }
   }
 
@@ -549,6 +673,7 @@
         logAnnounceInterval: 1,
         logSyncInterval: 0,
         logMinDelayReqInterval: 0,
+        clockSource: 'uplink',
       },
       ptp4l_running: false,
     };

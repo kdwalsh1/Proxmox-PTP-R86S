@@ -21,6 +21,12 @@ $csrf = csrf_token();
   </header>
 
   <main>
+    <section id="gps-panel" style="display:none">
+      <h2>GPS grandmaster source</h2>
+      <div id="gps-summary" class="gps-summary"></div>
+      <div id="gps-map" class="gps-map"></div>
+    </section>
+
     <section>
       <h2>VLANs</h2>
       <div id="vlans" class="vlan-list"></div>
