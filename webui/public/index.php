@@ -11,7 +11,7 @@ $csrf = csrf_token();
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf" content="<?= htmlspecialchars($csrf) ?>">
   <title>PTP Control</title>
-  <link rel="stylesheet" href="assets/css/style.css?v=1794060000">
+  <link rel="stylesheet" href="assets/css/style.css?v=1794070000">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 </head>
 <body>
@@ -151,6 +151,6 @@ $csrf = csrf_token();
     </section>
   </main>
 
-  <script src="assets/js/app.js?v=1794060000"></script>
+  <script src="assets/js/app.js?v=1794070000"></script>
 </body>
 </html>

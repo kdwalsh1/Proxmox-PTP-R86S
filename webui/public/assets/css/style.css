@@ -495,3 +495,15 @@ h2 {
 .survey-form input { width: 8rem; }
 .survey-form .gnss-check { flex-direction: row; align-items: center; gap: 0.4rem; font-size: 0.95rem; }
 .survey-form .gnss-check input { width: auto; }
+
+/* GPS cards render on a dark background (index.php sets #1e293b): make all
+   card text light. Banners and inputs keep their own colours. */
+.gps-visual-card,
+.gps-visual-card label,
+.gps-visual-card .skymap-legend,
+.gps-visual-card .sat-table th,
+.gps-visual-card .survey-note,
+.gps-visual-card .settings-actions span {
+  color: #f1f5f9;
+}
+.gps-visual-card .survey-note { opacity: 1; }

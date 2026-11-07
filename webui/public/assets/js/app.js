@@ -9,7 +9,7 @@ window.renderSatTable = function(sats) {
     const sorted = sats.slice().sort((a,b) => b.ss - a.ss);
     sorted.forEach(s => {
       const tr = document.createElement('tr');
-      tr.style.color = s.used ? '#4ade80' : '#94a3b8';
+      tr.style.color = s.used ? '#4ade80' : '#e2e8f0';
       let sys = 'Other';
       if (s.PRN >= 1 && s.PRN <= 32) sys = 'GPS';
       else if (s.PRN >= 33 && s.PRN <= 64) sys = 'SBAS';
