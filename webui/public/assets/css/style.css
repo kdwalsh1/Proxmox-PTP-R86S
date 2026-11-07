@@ -486,3 +486,10 @@ h2 {
   font-size: 0.85rem;
   margin: 0;
 }
+
+/* Survey-in (GNSS timing mode) card */
+.survey-card { margin-bottom: 1rem; }
+.survey-note { margin: 0 0 0.75rem; font-size: 0.9rem; opacity: 0.85; max-width: 70ch; }
+.survey-form { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; margin-top: 0.75rem; }
+.survey-form label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; }
+.survey-form input { width: 8rem; }

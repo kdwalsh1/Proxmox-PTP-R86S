@@ -170,3 +170,22 @@ this Pi5 as **Uplink**. No `priority1` tuning is needed: once the Pi5 is
 announcing `clockClass 6`, BMCA will prefer it over the R86S's own
 (unsynced) clock automatically. The R86S profile's status banner should
 switch to "Synced to grandmaster", `stepsRemoved 1`.
+
+## Survey-in (timing mode)
+
+The GPS panel has a **Survey-in** card for u-blox timing receivers (e.g. NEO-M8T).
+In normal navigation mode the receiver solves position and time together every
+epoch, so position noise (multipath, satellite handovers) leaks into the PPS.
+Survey-in averages the antenna position for at least the configured duration
+and until the accuracy target is met, then holds that position fixed and solves
+for **time only** - a steadier PPS that keeps working with a single satellite.
+
+- Use it once the antenna is permanently mounted; re-run it after moving it.
+  As a guide, a fixed-position error costs at most ~3.3 ns per metre.
+- Defaults: 24 h minimum (covers a full cycle of satellite geometry), 5 m target.
+  With a restricted sky view a tight target may never be reached - relax it.
+- The agent sends `UBX-CFG-TMODE2` via `ubxtool` through gpsd and saves the
+  receiver config (`-p SAVE`), so gpsd must **not** run read-only (`-b`).
+  Progress comes from `UBX-TIM-SVIN`; "Fixed" is also inferred from gpsd's
+  time-only fix status. `UBX_PROTVER` in `ptp-agent.py` must match the
+  receiver (`ubxtool -p MON-VER`, PROTVER line).

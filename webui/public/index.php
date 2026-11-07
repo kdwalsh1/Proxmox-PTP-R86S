@@ -11,7 +11,7 @@ $csrf = csrf_token();
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf" content="<?= htmlspecialchars($csrf) ?>">
   <title>PTP Control</title>
-  <link rel="stylesheet" href="assets/css/style.css?v=1793984077">
+  <link rel="stylesheet" href="assets/css/style.css?v=1794050000">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 </head>
 <body>
@@ -24,6 +24,28 @@ $csrf = csrf_token();
     <section id="gps-panel" style="display:none">
   <h2>GPS Grandmaster & Satellite Telemetry</h2>
   <div id="gps-summary" class="gps-summary"></div>
+
+  <div class="gps-visual-card survey-card">
+    <h3>Survey-in (timing mode)</h3>
+    <p class="survey-note">When the antenna is permanently fixed and the position plot has settled,
+      survey-in gives better timing: the receiver averages its position, then holds it fixed and
+      solves for time only, giving a steadier PPS through satellite handovers.
+      Re-run it after moving the antenna.</p>
+    <div id="survey-status" class="banner banner-idle">Checking receiver...</div>
+    <form id="survey-form" class="survey-form">
+      <label>Minimum duration (hours)
+        <input type="number" name="min_hours" min="1" max="168" step="1" value="24">
+      </label>
+      <label>Accuracy target (m)
+        <input type="number" name="acc_m" min="0.5" max="50" step="0.5" value="5">
+      </label>
+      <div class="settings-actions">
+        <button type="submit" id="survey-start">Start survey-in</button>
+        <button type="button" id="survey-stop">Stop (navigation mode)</button>
+        <span id="survey-msg"></span>
+      </div>
+    </form>
+  </div>
   
   <style>
     .sat-table th, .sat-table td { padding: 6px 12px; border-bottom: 1px solid #334155; }
@@ -109,6 +131,6 @@ $csrf = csrf_token();
     </section>
   </main>
 
-  <script src="assets/js/app.js?v=1793983482"></script>
+  <script src="assets/js/app.js?v=1794050000"></script>
 </body>
 </html>

@@ -12,7 +12,9 @@ LAST_SKY = None
 
 import os
 import re
+import shutil
 import sqlite3
+import struct
 import subprocess
 import threading
 import time
@@ -67,8 +69,20 @@ GPS_CLOCK_CLASS_UNLOCKED = 248
 GPS_CLOCK_ACCURACY = "0x21"
 GPS_TIME_SOURCE = "0x20"
 
+# GNSS survey-in (u-blox timing receivers, e.g. NEO-M8T): UBX-CFG-TMODE2 is
+# sent through gpsd with ubxtool (gpsd must not run read-only, i.e. no -b).
+# timeMode 0 = navigation (position + time), 1 = survey-in, 2 = fixed position.
+UBX_PROTVER = "22.00"
+SURVEY_POLL_INTERVAL = 30
+SURVEY_DEFAULT_MIN_HOURS = 24
+SURVEY_DEFAULT_ACC_M = 5.0
+SURVEY_MIN_HOURS_RANGE = (1, 168)
+SURVEY_ACC_M_RANGE = (0.5, 50.0)
+GPSD_STATUS_TIME_ONLY = 7  # gpsd TPV "status": time-only fix (surveyed position)
+
 TOKEN = None
 STATE_LOCK = threading.Lock()
+UBX_LOCK = threading.Lock()
 STATE = {}
 
 
@@ -606,6 +620,7 @@ def query_gps_status():
         "eph": tpv.get("eph", tpv.get("epx", 5.0)),
         "speed_kmh": (tpv.get("speed", 0.0) or 0.0) * 3.6,
         "gps_time": tpv.get("time"),
+        "tpv_status": tpv.get("status"),
         "tdop": None,
         "satellites": [],
         "satellites_used": None,
@@ -647,6 +662,134 @@ def query_gps_status():
 
     return result
 
+
+
+def ubx(args, timeout=15):
+    """Run ubxtool through gpsd. Serialised: ubxtool output is a stream of
+    every UBX message seen while it waits, so concurrent runs would mix."""
+    with UBX_LOCK:
+        return run(["ubxtool", "-P", UBX_PROTVER, "-w", "2"] + args, timeout=timeout)
+
+
+def parse_ubx_block(out, name):
+    """Return {field: int} for the last decoded `UBX-<name>:` block in
+    ubxtool output, or None if it wasn't seen."""
+    lines = out.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip() == f"UBX-{name}:":
+            start = i
+    if start is None:
+        return None
+    tokens = []
+    for line in lines[start + 1:]:
+        if not line.strip() or line.lstrip().startswith("UBX-"):
+            break
+        tokens.extend(line.replace(":", " ").split())
+    fields = {}
+    for key, val in zip(tokens, tokens[1:]):
+        if key[0].isalpha():
+            try:
+                fields[key] = int(val, 0)
+            except ValueError:
+                continue
+    return fields
+
+
+def tmode2_payload(mode, min_dur_s=0, acc_limit_mm=0):
+    data = struct.pack("<BBHiiiIII", mode, 0, 0, 0, 0, 0, 0, min_dur_s, acc_limit_mm)
+    return ",".join(f"0x{b:02x}" for b in data)
+
+
+def query_survey_status(gps_status):
+    """Survey-in state of the local GNSS receiver, or None if there's no
+    local GPS / ubxtool. Polls UBX-CFG-TMODE2 and UBX-TIM-SVIN."""
+    if not gps_status or not shutil.which("ubxtool"):
+        return None
+    result = {
+        "checked": int(time.time()),
+        "time_mode": None,
+        "state": "unknown",
+        "min_duration_s": None,
+        "acc_limit_m": None,
+        "elapsed_s": None,
+        "accuracy_m": None,
+        "observations": None,
+    }
+    rc, out, _ = ubx(["-c", "0x06,0x3d"])
+    tmode = parse_ubx_block(out, "CFG-TMODE2") if rc == 0 else None
+    if tmode is None:
+        result["error"] = "receiver did not answer CFG-TMODE2"
+        return result
+    mode = tmode.get("timeMode")
+    result["time_mode"] = mode
+    result["min_duration_s"] = tmode.get("svinMinDur")
+    if tmode.get("svinAccLimit"):
+        result["acc_limit_m"] = tmode["svinAccLimit"] / 1000.0
+
+    time_only = gps_status.get("tpv_status") == GPSD_STATUS_TIME_ONLY
+    if mode == 0:
+        result["state"] = "off"
+        return result
+    if mode == 2:
+        result["state"] = "fixed"
+        return result
+
+    rc, out, _ = ubx(["-c", "0x0d,0x04"])
+    svin = parse_ubx_block(out, "TIM-SVIN") if rc == 0 else None
+    if svin:
+        result["elapsed_s"] = svin.get("dur")
+        result["observations"] = svin.get("obs")
+        if svin.get("meanV") is not None:
+            result["accuracy_m"] = round((svin["meanV"] ** 0.5) / 1000.0, 2)
+        if svin.get("valid") == 1 and svin.get("active", 0) == 0:
+            result["state"] = "fixed"
+        else:
+            result["state"] = "surveying"
+    else:
+        result["state"] = "fixed" if time_only else "surveying"
+    return result
+
+
+def set_survey(action, min_hours=None, acc_m=None):
+    """Start (survey-in) or stop (back to navigation mode) and save the
+    receiver configuration to battery-backed RAM/flash."""
+    if action == "start":
+        min_hours = SURVEY_DEFAULT_MIN_HOURS if min_hours is None else float(min_hours)
+        acc_m = SURVEY_DEFAULT_ACC_M if acc_m is None else float(acc_m)
+        if not SURVEY_MIN_HOURS_RANGE[0] <= min_hours <= SURVEY_MIN_HOURS_RANGE[1]:
+            raise ValueError("minimum duration must be 1-168 hours")
+        if not SURVEY_ACC_M_RANGE[0] <= acc_m <= SURVEY_ACC_M_RANGE[1]:
+            raise ValueError("accuracy limit must be 0.5-50 m")
+        payload = tmode2_payload(1, int(min_hours * 3600), int(acc_m * 1000))
+    elif action == "stop":
+        payload = tmode2_payload(0)
+    else:
+        raise ValueError("action must be start or stop")
+
+    if not shutil.which("ubxtool"):
+        raise RuntimeError("ubxtool not installed")
+    rc, out, err = ubx(["-c", f"0x06,0x3d,{payload}"])
+    if rc != 0 or not re.search(r"ACK to Class x06 \(CFG\) ID x3d", out):
+        raise RuntimeError("receiver did not acknowledge CFG-TMODE2" + (f": {err.strip()}" if err.strip() else ""))
+    rc, out, err = ubx(["-p", "SAVE"])
+    if rc != 0:
+        raise RuntimeError("receiver config saved to RAM only (SAVE failed)")
+
+
+def survey_loop():
+    """Survey state changes slowly; poll it off the main 3 s loop."""
+    while True:
+        try:
+            with STATE_LOCK:
+                gps_status = STATE.get("gps_status")
+            survey = query_survey_status(gps_status)
+            with STATE_LOCK:
+                STATE["survey"] = survey
+        except Exception as e:
+            with STATE_LOCK:
+                STATE["survey"] = {"state": "unknown", "error": f"survey poll error: {e}"}
+        time.sleep(SURVEY_POLL_INTERVAL)
 
 
 def apply_grandmaster_settings(desired, profile_statuses, gps_status, state):
@@ -824,7 +967,7 @@ def build_status(desired, interfaces, profile_statuses, phc2sys_bridges, gps_sta
         "vlans": vlan_list,
         "profiles": profiles_out,
         "phc2sys": phc2sys_bridges,
-        "gps": gps_status,
+        "gps": dict(gps_status, survey=STATE.get("survey")) if gps_status else None,
     }
 
 
@@ -946,6 +1089,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/gps/survey":
+            self._handle_survey()
+            return
         if parsed.path != "/api/config":
             self._send_json(404, {"error": "not found"})
             return
@@ -981,6 +1127,26 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send_json(200, {"ok": True})
 
+    def _handle_survey(self):
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+            with STATE_LOCK:
+                gps_status = STATE.get("gps_status")
+            if not gps_status:
+                raise ValueError("no local GPS receiver on this host")
+            set_survey(body.get("action"), body.get("min_hours"), body.get("acc_m"))
+            survey = query_survey_status(gps_status)
+            with STATE_LOCK:
+                STATE["survey"] = survey
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+            return
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+            return
+        self._send_json(200, {"ok": True, "survey": survey})
+
     def log_message(self, *args):
         pass
 
@@ -995,6 +1161,8 @@ def main():
     STATE["interfaces"] = []
 
     threading.Thread(target=poll_loop, daemon=True).start()
+    if shutil.which("ubxtool"):
+        threading.Thread(target=survey_loop, daemon=True).start()
 
     server = ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), Handler)
     server.serve_forever()

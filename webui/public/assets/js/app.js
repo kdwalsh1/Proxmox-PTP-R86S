@@ -642,6 +642,7 @@ async function renderGpsMap(lat, lon, eph) {
         + (gps.gps_time ? ` - GPS time ${gps.gps_time}` : '')
       : 'No position fix yet.';
     summary.appendChild(details);
+    updateSurveyPanel(gps.survey);
     const satellites = gps.satellites || [];
     if (window.renderSkyMap) window.renderSkyMap(satellites);
     if (window.renderSatTable) window.renderSatTable(satellites);
@@ -662,6 +663,94 @@ async function renderGpsMap(lat, lon, eph) {
       gpsMarker.setLatLng([gps.lat, gps.lon]);
     }
   }
+
+  function formatDuration(s) {
+    if (s === null || s === undefined) return null;
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }
+
+  let surveyBusy = false;
+
+  function updateSurveyPanel(survey) {
+    const el = document.getElementById('survey-status');
+    const startBtn = document.getElementById('survey-start');
+    const stopBtn = document.getElementById('survey-stop');
+    if (!el) return;
+    if (!survey) {
+      el.className = 'banner banner-idle';
+      el.textContent = 'Checking receiver...';
+      return;
+    }
+    if (survey.error) {
+      el.className = 'banner banner-error';
+      el.textContent = survey.error;
+    } else if (survey.state === 'off') {
+      el.className = 'banner banner-idle';
+      el.textContent = 'Off - navigation mode (solving position + time)';
+    } else if (survey.state === 'surveying') {
+      el.className = 'banner banner-unsynced';
+      const parts = ['Surveying'];
+      const elapsed = formatDuration(survey.elapsed_s);
+      const minDur = formatDuration(survey.min_duration_s);
+      if (elapsed) parts.push(`${elapsed} elapsed` + (minDur ? ` of min ${minDur}` : ''));
+      if (survey.accuracy_m !== null && survey.accuracy_m !== undefined) {
+        parts.push(`accuracy ${survey.accuracy_m} m` + (survey.acc_limit_m ? ` (target ${survey.acc_limit_m} m)` : ''));
+      }
+      if (survey.observations) parts.push(`${survey.observations} obs`);
+      el.textContent = parts.join(' - ');
+    } else if (survey.state === 'fixed') {
+      el.className = 'banner banner-gm';
+      el.textContent = 'Fixed position - time-only solution (timing mode active)';
+    } else {
+      el.className = 'banner banner-idle';
+      el.textContent = 'Survey state unknown';
+    }
+    if (!surveyBusy) {
+      startBtn.disabled = survey.state === 'surveying';
+      stopBtn.disabled = survey.state === 'off';
+    }
+  }
+
+  async function sendSurvey(body) {
+    const msg = document.getElementById('survey-msg');
+    surveyBusy = true;
+    document.getElementById('survey-start').disabled = true;
+    document.getElementById('survey-stop').disabled = true;
+    msg.textContent = 'Sending to receiver...';
+    try {
+      const { ok, data } = await fetchJSON('ajax.php?action=survey', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({ csrf: csrfToken }, body)),
+      });
+      msg.textContent = ok ? 'Done - saved to receiver.' : (data.error || 'Failed');
+      if (ok && data.survey) updateSurveyPanel(data.survey);
+    } catch (e) {
+      msg.textContent = 'Request failed';
+    } finally {
+      surveyBusy = false;
+    }
+  }
+
+  document.getElementById('survey-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const minHours = parseFloat(form.min_hours.value);
+    const accM = parseFloat(form.acc_m.value);
+    if (!(minHours >= 1 && minHours <= 168) || !(accM >= 0.5 && accM <= 50)) {
+      document.getElementById('survey-msg').textContent = 'Duration 1-168 h, accuracy 0.5-50 m.';
+      return;
+    }
+    if (!confirm(`Start survey-in (min ${minHours} h, target ${accM} m)? This restarts any existing survey.`)) return;
+    sendSurvey({ action: 'start', min_hours: minHours, acc_m: accM });
+  });
+
+  document.getElementById('survey-stop').addEventListener('click', () => {
+    if (!confirm('Return the receiver to navigation mode? The surveyed position is discarded.')) return;
+    sendSurvey({ action: 'stop' });
+  });
 
   function addProfileOption(name) {
     document.querySelectorAll('#interfaces select[data-field="profile"]').forEach((select) => {
