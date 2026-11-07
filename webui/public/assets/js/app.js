@@ -1,3 +1,29 @@
+
+window.renderSatTable = function(sats) {
+  try {
+    const tbody = document.querySelector('#sat-table tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    if (!sats || !Array.isArray(sats)) return;
+    
+    const sorted = sats.slice().sort((a,b) => b.ss - a.ss);
+    sorted.forEach(s => {
+      const tr = document.createElement('tr');
+      tr.style.color = s.used ? '#4ade80' : '#94a3b8';
+      let sys = 'Other';
+      if (s.PRN >= 1 && s.PRN <= 32) sys = 'GPS';
+      else if (s.PRN >= 33 && s.PRN <= 64) sys = 'SBAS';
+      else if (s.PRN >= 65 && s.PRN <= 96) sys = 'GLONASS';
+      else if (s.PRN >= 120 && s.PRN <= 158) sys = 'SBAS';
+      else if (s.PRN >= 159 && s.PRN <= 210) sys = 'BeiDou';
+      else if (s.PRN >= 211 && s.PRN <= 246) sys = 'Galileo';
+      
+      tr.innerHTML = `<td>${s.PRN}</td><td>${sys}</td><td>${s.az}&deg;</td><td>${s.el}&deg;</td><td>${s.ss} dB</td>`;
+      tbody.appendChild(tr);
+    });
+  } catch(e) { console.error("SatTable error:", e); }
+};
+
 (function () {
   const csrfToken = document.querySelector('meta[name="csrf"]').content;
   const PHC_GROUP_LETTERS = 'ABCDEFGH';
@@ -393,11 +419,193 @@
   }
 
   const FIX_MODE_LABELS = { 0: 'Unknown', 1: 'No fix', 2: '2D fix', 3: '3D fix' };
-  let gpsMap = null;
-  let gpsMarker = null;
+  // --- GPS Diagnostics & Wander State ---
+let gpsMap = null;
+let gpsMarker = null;
+let gpsWanderTrail = null;
+let gpsErrorCircle = null;
+const GPS_TRAIL_MAX_POINTS = 120;
+const gpsHistory = [];
 
-  // GPS is a device-level status (not per-profile), so the whole panel is
-  // hidden whenever status.gps is null - which is always, on the R86S.
+/**
+ * Draws polar sky projection on the canvas.
+ * Projects satellites using:
+ *   r = R * cos(elevation) or linear r = R * (1 - el/90)
+ *   theta = (azimuth - 90 deg) in radians
+ */
+window.renderSkyMap = renderSkyMap;
+function renderSkyMap(satellites) {
+  const canvas = document.getElementById('gps-skymap');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  const cx = width / 2;
+  const cy = height / 2;
+  const maxR = (width / 2) - 20;
+
+  ctx.clearRect(0, 0, width, height);
+
+  // Background disk
+  ctx.fillStyle = '#11141a';
+  ctx.beginPath();
+  ctx.arc(cx, cy, maxR, 0, 2 * Math.PI);
+  ctx.fill();
+
+  // Concentric Elevation Rings: 0° (horizon), 30°, 60°
+  ctx.strokeStyle = '#4a5568';
+  ctx.lineWidth = 1;
+  [0, 30, 60].forEach((el) => {
+    const r = maxR * (1 - el / 90);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+    ctx.stroke();
+
+    // Elevation degree label
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '9px monospace';
+    ctx.fillText(`${el}°`, cx + 3, cy - r + 10);
+  });
+
+  // Crosshairs: N-S, E-W
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - maxR);
+  ctx.lineTo(cx, cy + maxR);
+  ctx.moveTo(cx - maxR, cy);
+  ctx.lineTo(cx + maxR, cy);
+  ctx.stroke();
+
+  // Cardinal Labels
+  ctx.fillStyle = '#a0aec0';
+  ctx.font = 'bold 11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('N', cx, cy - maxR + 9);
+  ctx.fillText('S', cx, cy + maxR - 9);
+  ctx.fillText('E', cx + maxR - 9, cy);
+  ctx.fillText('W', cx - maxR + 9, cy);
+
+  if (!Array.isArray(satellites) || satellites.length === 0) {
+    ctx.fillStyle = '#718096';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('No SV Data', cx, cy);
+    return;
+  }
+
+  // Plot each Satellite
+  satellites.forEach((sat) => {
+    const az = sat.az !== undefined ? sat.az : 0;
+    const el = sat.el !== undefined ? sat.el : 0;
+    if (el < 0) return;
+
+    // Linear projection from zenith (el=90 -> r=0) to horizon (el=0 -> r=maxR)
+    const r = maxR * (1 - el / 90);
+    const theta = (az - 90) * (Math.PI / 180);
+    const x = cx + r * Math.cos(theta);
+    const y = cy + r * Math.sin(theta);
+
+    const isUsed = !!sat.used;
+    const prn = String(sat.PRN || sat.svid || '?');
+    const ss = sat.ss !== undefined && sat.ss !== null ? Math.round(sat.ss) : null;
+
+    // Satellite Dot
+    ctx.beginPath();
+    ctx.arc(x, y, isUsed ? 6 : 4, 0, 2 * Math.PI);
+    if (isUsed) {
+      ctx.fillStyle = '#00e676';
+      ctx.fill();
+      ctx.strokeStyle = '#003311';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = '#374151';
+      ctx.fill();
+      ctx.strokeStyle = '#6b7280';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Label: PRN & SNR (dB-Hz)
+    ctx.fillStyle = isUsed ? '#ffffff' : '#9ca3af';
+    ctx.font = isUsed ? 'bold 10px monospace' : '9px monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    const label = ss !== null ? `${prn} (${ss})` : prn;
+    ctx.fillText(label, x + 7, y - 2);
+  });
+}
+
+/**
+ * Updates the Leaflet map, position breadcrumb drift trail, and accuracy circle.
+ */
+async function renderGpsMap(lat, lon, eph) {
+  await ensureLeaflet();
+  const mapEl = document.getElementById('gps-map');
+  if (!mapEl) return;
+
+  // Add new fix to wander history
+  gpsHistory.push([lat, lon]);
+  if (gpsHistory.length > GPS_TRAIL_MAX_POINTS) {
+    gpsHistory.shift();
+  }
+
+  if (!gpsMap) {
+    // Initialize Leaflet instance
+    gpsMap = L.map(mapEl, {
+      zoomControl: true,
+      attributionControl: false
+    }).setView([lat, lon], 18);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 20
+    }).addTo(gpsMap);
+
+    // Breadcrumb drift polyline
+    gpsWanderTrail = L.polyline(gpsHistory, {
+      color: '#e53e3e',
+      weight: 2,
+      opacity: 0.85,
+      smoothFactor: 0
+    }).addTo(gpsMap);
+
+    // Accuracy circle (estimated horizontal error in meters)
+    const errRadius = eph || 5;
+    gpsErrorCircle = L.circle([lat, lon], {
+      radius: errRadius,
+      color: '#3182ce',
+      fillColor: '#63b3ed',
+      fillOpacity: 0.15,
+      weight: 1
+    }).addTo(gpsMap);
+
+    // Live position pin
+    gpsMarker = L.circleMarker([lat, lon], {
+      radius: 5,
+      color: '#ffffff',
+      fillColor: '#3182ce',
+      fillOpacity: 1,
+      weight: 2
+    }).addTo(gpsMap);
+  } else {
+    // Update live positions
+    gpsMarker.setLatLng([lat, lon]);
+    gpsWanderTrail.setLatLngs(gpsHistory);
+
+    if (eph) {
+      gpsErrorCircle.setLatLng([lat, lon]);
+      gpsErrorCircle.setRadius(eph);
+    }
+
+    // Maintain focus on position without jarring manual pans
+    if (!gpsMap.getBounds().contains([lat, lon])) {
+      gpsMap.panTo([lat, lon]);
+    }
+  }
+}
+
+/**
+ * Main update function called by your poll loop.
+ */
   async function renderGpsPanel(status) {
     const panel = document.getElementById('gps-panel');
     const gps = status.gps;
@@ -434,6 +642,9 @@
         + (gps.gps_time ? ` - GPS time ${gps.gps_time}` : '')
       : 'No position fix yet.';
     summary.appendChild(details);
+    const satellites = gps.satellites || [];
+    if (window.renderSkyMap) window.renderSkyMap(satellites);
+    if (window.renderSatTable) window.renderSatTable(satellites);
 
     if (!hasFix) return;
 
@@ -586,7 +797,7 @@
   }
 
   async function refreshStatus(forceRender) {
-    const { ok, data } = await fetchJSON('ajax.php?action=status');
+    const { ok, data } = await fetchJSON('ajax.php?action=status&_t=' + Date.now());
     if (!ok) return;
 
     if (forceRender || !rendered) {

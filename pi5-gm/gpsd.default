@@ -5,5 +5,6 @@
 
 START_DAEMON="true"
 USBAUTO="false"
-DEVICES="${UART_DEV}"
-GPSD_OPTIONS="-n"
+DEVICES="${UART_DEV} /dev/pps0"
+GPSD_OPTIONS="-n -s 38400"
+GPSD_SOCKET="/run/gpsd.sock"

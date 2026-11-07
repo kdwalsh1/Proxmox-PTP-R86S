@@ -37,8 +37,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Defaults (override via environment variables)
 # ---------------------------------------------------------------------------
 PPS_GPIO="${PPS_GPIO:-18}"
-UART_OVERLAY="${UART_OVERLAY:-uart3-pi5}"
-UART_DEV="${UART_DEV:-/dev/ttyAMA3}"
+UART_OVERLAY="${UART_OVERLAY:-uart0-pi5}"
+UART_DEV="${UART_DEV:-/dev/ttyAMA0}"
 CONFIG_TXT="${CONFIG_TXT:-/boot/firmware/config.txt}"
 AGENT_PORT="${AGENT_PORT:-8081}"
 

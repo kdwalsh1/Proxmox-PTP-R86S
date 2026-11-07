@@ -8,6 +8,8 @@ Stdlib only. Runs as root via ptp-agent.service.
 """
 
 import json
+LAST_SKY = None
+
 import os
 import re
 import sqlite3
@@ -575,7 +577,7 @@ def query_gps_status():
     callers must treat None as "no local GPS source" rather than an error
     (matches this file's existing degrade-gracefully convention).
     """
-    rc, out, _ = run(["gpspipe", "-w", "-n", "8"], timeout=5)
+    rc, out, _ = run(["gpspipe", "-w", "-x", "2"], timeout=5)
     if rc != 0:
         return None
 
@@ -585,10 +587,13 @@ def query_gps_status():
             msg = json.loads(line)
         except ValueError:
             continue
+        global LAST_SKY
         if msg.get("class") == "TPV":
             tpv = msg
         elif msg.get("class") == "SKY":
-            sky = msg
+            if "satellites" in msg:
+                LAST_SKY = msg
+    sky = LAST_SKY
 
     if tpv is None:
         return None
@@ -598,16 +603,32 @@ def query_gps_status():
         "lat": tpv.get("lat"),
         "lon": tpv.get("lon"),
         "alt_m": tpv.get("altHAE", tpv.get("alt")),
+        "eph": tpv.get("eph", tpv.get("epx", 5.0)),
+        "speed_kmh": (tpv.get("speed", 0.0) or 0.0) * 3.6,
         "gps_time": tpv.get("time"),
+        "tdop": None,
+        "satellites": [],
         "satellites_used": None,
         "satellites_visible": None,
         "pps_reachable": False,
         "pps_selected": False,
     }
-    if sky and isinstance(sky.get("satellites"), list):
-        sats = sky["satellites"]
-        result["satellites_visible"] = len(sats)
-        result["satellites_used"] = sum(1 for s in sats if s.get("used"))
+    if sky:
+        result["tdop"] = sky.get("tdop")
+        if isinstance(sky.get("satellites"), list):
+            sats = sky["satellites"]
+            result["satellites_visible"] = len(sats)
+            result["satellites_used"] = sum(1 for s in sats if s.get("used"))
+            result["satellites"] = [
+                {
+                    "PRN": s.get("PRN", s.get("svid")),
+                    "az": s.get("az", 0),
+                    "el": s.get("el", 0),
+                    "ss": s.get("ss", 0),
+                    "used": bool(s.get("used", False)),
+                }
+                for s in sats
+            ]
 
     # `chronyc sources` (plain text, not -c/CSV mode - the CSV column order
     # for `sources` isn't documented anywhere reliable, whereas the M/S
@@ -625,6 +646,7 @@ def query_gps_status():
                 result["pps_selected"] = state_char == "*"
 
     return result
+
 
 
 def apply_grandmaster_settings(desired, profile_statuses, gps_status, state):
@@ -680,17 +702,25 @@ def reconcile_phc2sys(desired, interfaces, profile_statuses, state):
         steps = status.get("steps_removed")
         if steps is None or steps <= 0:
             continue
+        port_states = status.get("port_states", {})
         for _, cfg, iface in get_enabled_interfaces(profile_cfg, interfaces):
-            if cfg.get("role") == "uplink" and iface["phc_index"] is not None:
+            if (cfg.get("role") == "uplink" and iface["phc_index"] is not None
+                    and str(port_states.get(iface["name"], "")).upper() == "SLAVE"):
                 reference = f"/dev/ptp{iface['phc_index']}"
                 break
         if reference != "CLOCK_REALTIME":
             break
 
+    uplink_phcs = set()
+    for profile_cfg in desired["profiles"].values():
+        for _, cfg, iface in get_enabled_interfaces(profile_cfg, interfaces):
+            if cfg.get("role") == "uplink" and iface["phc_index"] is not None:
+                uplink_phcs.add(iface["phc_index"])
+
     desired_bridges = {}
     for phc in all_phcs:
         target = f"/dev/ptp{phc}"
-        if target != reference:
+        if target != reference and phc not in uplink_phcs:
             desired_bridges[target] = reference
     if reference != "CLOCK_REALTIME":
         desired_bridges["CLOCK_REALTIME"] = reference
@@ -712,7 +742,14 @@ def reconcile_phc2sys(desired, interfaces, profile_statuses, state):
     for target, source in desired_bridges.items():
         if target in procs:
             continue
-        cmd = ["phc2sys", "-s", source, "-c", target, "-O", "0"]
+        utc_offset = 37
+        if source == "CLOCK_REALTIME":
+            offset = str(utc_offset)
+        elif target == "CLOCK_REALTIME":
+            offset = str(-utc_offset)
+        else:
+            offset = "0"
+        cmd = ["phc2sys", "-s", source, "-c", target, "-O", offset, "-S", "1"]
         if target == "CLOCK_REALTIME":
             cmd.append("-m")
         procs[target] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
