@@ -752,7 +752,7 @@ def reconcile_phc2sys(desired, interfaces, profile_statuses, state):
         cmd = ["phc2sys", "-s", source, "-c", target, "-O", offset, "-S", "1"]
         if target == "CLOCK_REALTIME":
             cmd.append("-m")
-        procs[target] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        procs[target] = subprocess.Popen(["taskset", "-c", "2", "chrt", "-f", "60"] + cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         sources[target] = source
 
     bridges = []
