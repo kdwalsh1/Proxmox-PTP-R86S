@@ -189,3 +189,16 @@ for **time only** - a steadier PPS that keeps working with a single satellite.
   Progress comes from `UBX-TIM-SVIN`; "Fixed" is also inferred from gpsd's
   time-only fix status. `UBX_PROTVER` in `ptp-agent.py` must match the
   receiver (`ubxtool -p MON-VER`, PROTVER line).
+- TMODE2 survey-in mode restarts the survey after every receiver power cycle,
+  so when a survey completes the agent writes the surveyed mean position into
+  **fixed mode** (TMODE2 mode 2) and saves it. "Stop" returns to navigation mode.
+
+## Constellations
+
+The **Constellations** card selects what the receiver tracks: GPS (always on)
+plus up to two of GLONASS / Galileo / BeiDou (u-blox M8 limit), and SBAS. With
+a restricted sky view, adding Galileo usually helps the most. Changes are sent
+with `ubxtool -e/-d` (UBX-CFG-GNSS), disables before enables, then saved.
+Changing Galileo also needs a hardware reset, sent as `UBX-CFG-RST` - never
+`ubxtool -p RESET`, which restores **factory defaults**. Expect the fix and PPS
+to drop for up to a minute; the GM advertises clockClass 248 until it relocks.

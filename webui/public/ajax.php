@@ -1,7 +1,7 @@
 <?php
 /**
  * Single JSON endpoint proxying the host ptp-agent API.
- * ?action=status|history|config (config also accepts POST)|survey (POST)
+ * ?action=status|history|config (config also accepts POST)|survey (POST)|gnss (POST)
  */
 
 $config = require __DIR__ . '/../includes/config.php';
@@ -71,6 +71,27 @@ switch ($action) {
         if (isset($body['min_hours'])) $req['min_hours'] = (float) $body['min_hours'];
         if (isset($body['acc_m'])) $req['acc_m'] = (float) $body['acc_m'];
         [$status, $data] = agent_post($config, '/api/gps/survey', $req);
+        http_response_code($status ?: 502);
+        echo json_encode($data);
+        break;
+
+    case 'gnss':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST required']);
+            break;
+        }
+        $body = json_decode(file_get_contents('php://input'), true);
+        if (!is_array($body) || !csrf_verify($body['csrf'] ?? null) || !is_array($body['gnss'] ?? null)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'invalid request']);
+            break;
+        }
+        $gnss = [];
+        foreach (['GPS', 'SBAS', 'GALILEO', 'BEIDOU', 'GLONASS'] as $name) {
+            $gnss[$name] = !empty($body['gnss'][$name]);
+        }
+        [$status, $data] = agent_post($config, '/api/gps/gnss', ['gnss' => $gnss]);
         http_response_code($status ?: 502);
         echo json_encode($data);
         break;

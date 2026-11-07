@@ -643,6 +643,7 @@ async function renderGpsMap(lat, lon, eph) {
       : 'No position fix yet.';
     summary.appendChild(details);
     updateSurveyPanel(gps.survey);
+    updateGnssPanel(gps.gnss);
     const satellites = gps.satellites || [];
     if (window.renderSkyMap) window.renderSkyMap(satellites);
     if (window.renderSatTable) window.renderSatTable(satellites);
@@ -750,6 +751,73 @@ async function renderGpsMap(lat, lon, eph) {
   document.getElementById('survey-stop').addEventListener('click', () => {
     if (!confirm('Return the receiver to navigation mode? The surveyed position is discarded.')) return;
     sendSurvey({ action: 'stop' });
+  });
+
+  const GNSS_LABELS = { GPS: 'GPS', GLONASS: 'GLONASS', GALILEO: 'Galileo', BEIDOU: 'BeiDou', SBAS: 'SBAS' };
+  let gnssDirty = false;
+  let gnssBusy = false;
+
+  function updateGnssPanel(gnss) {
+    const el = document.getElementById('gnss-status');
+    const form = document.getElementById('gnss-form');
+    if (!el || !form) return;
+    if (!gnss) {
+      el.className = 'banner banner-idle';
+      el.textContent = 'Checking receiver...';
+      return;
+    }
+    const on = Object.keys(GNSS_LABELS).filter((k) => gnss[k]).map((k) => GNSS_LABELS[k]);
+    el.className = 'banner banner-gm';
+    el.textContent = 'Tracking: ' + (on.length ? on.join(', ') : 'none');
+    if (!gnssDirty && !gnssBusy) {
+      ['GLONASS', 'GALILEO', 'BEIDOU', 'SBAS'].forEach((k) => { form[k].checked = !!gnss[k]; });
+    }
+    enforceGnssLimit();
+  }
+
+  function enforceGnssLimit() {
+    const form = document.getElementById('gnss-form');
+    const majors = Array.from(form.querySelectorAll('input[data-major]'));
+    const count = majors.filter((i) => i.checked).length;
+    majors.forEach((i) => { i.disabled = gnssBusy || (!i.checked && count >= 2); });
+  }
+
+  document.getElementById('gnss-form').addEventListener('change', () => {
+    gnssDirty = true;
+    enforceGnssLimit();
+  });
+
+  document.getElementById('gnss-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const gnss = { GPS: true };
+    ['GLONASS', 'GALILEO', 'BEIDOU', 'SBAS'].forEach((k) => { gnss[k] = form[k].checked; });
+    const list = Object.keys(GNSS_LABELS).filter((k) => gnss[k]).map((k) => GNSS_LABELS[k]).join(', ');
+    if (!confirm(`Apply constellations: ${list}?\nTracking restarts - fix and PPS drop for up to a minute.`)) return;
+    const msg = document.getElementById('gnss-msg');
+    const btn = document.getElementById('gnss-apply');
+    gnssBusy = true;
+    btn.disabled = true;
+    enforceGnssLimit();
+    msg.textContent = 'Reconfiguring receiver...';
+    try {
+      const { ok, data } = await fetchJSON('ajax.php?action=gnss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csrf: csrfToken, gnss }),
+      });
+      msg.textContent = ok ? 'Done - saved to receiver.' : (data.error || 'Failed');
+      if (ok) {
+        gnssDirty = false;
+        if (data.gnss) updateGnssPanel(data.gnss);
+      }
+    } catch (err) {
+      msg.textContent = 'Request failed';
+    } finally {
+      gnssBusy = false;
+      btn.disabled = false;
+      enforceGnssLimit();
+    }
   });
 
   function addProfileOption(name) {

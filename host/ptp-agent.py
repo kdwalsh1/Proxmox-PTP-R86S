@@ -80,6 +80,12 @@ SURVEY_MIN_HOURS_RANGE = (1, 168)
 SURVEY_ACC_M_RANGE = (0.5, 50.0)
 GPSD_STATUS_TIME_ONLY = 7  # gpsd TPV "status": time-only fix (surveyed position)
 
+# Constellations (u-blox M8: GPS plus up to two of GLONASS/Galileo/BeiDou).
+# Names are ubxtool -e/-d keywords; gnssId as in UBX-CFG-GNSS.
+GNSS_IDS = {"GPS": 0, "SBAS": 1, "GALILEO": 2, "BEIDOU": 3, "GLONASS": 6}
+GNSS_MAJOR_OPTIONAL = ("GLONASS", "GALILEO", "BEIDOU")
+GNSS_MAX_OPTIONAL = 2
+
 TOKEN = None
 STATE_LOCK = threading.Lock()
 UBX_LOCK = threading.Lock()
@@ -696,9 +702,34 @@ def parse_ubx_block(out, name):
     return fields
 
 
-def tmode2_payload(mode, min_dur_s=0, acc_limit_mm=0):
-    data = struct.pack("<BBHiiiIII", mode, 0, 0, 0, 0, 0, 0, min_dur_s, acc_limit_mm)
+def tmode2_payload(mode, min_dur_s=0, acc_limit_mm=0, ecef_cm=(0, 0, 0), fixed_acc_mm=0):
+    data = struct.pack("<BBHiiiIII", mode, 0, 0, ecef_cm[0], ecef_cm[1], ecef_cm[2],
+                       fixed_acc_mm, min_dur_s, acc_limit_mm)
     return ",".join(f"0x{b:02x}" for b in data)
+
+
+def ubx_set(cls_id, payload, what):
+    rc, out, err = ubx(["-c", f"{cls_id},{payload}"] if payload else ["-c", cls_id])
+    cls, mid = cls_id.split(",")
+    if rc != 0 or not re.search(rf"ACK to Class x{int(cls, 0):02x} \(\w+\) ID x{int(mid, 0):02x}", out):
+        raise RuntimeError(f"receiver did not acknowledge {what}" + (f": {err.strip()}" if err.strip() else ""))
+
+
+def ubx_save():
+    rc, _, _ = ubx(["-p", "SAVE"])
+    if rc != 0:
+        raise RuntimeError("receiver config applied but not saved (SAVE failed)")
+
+
+def lock_surveyed_position(svin):
+    """TMODE2 survey-in mode restarts the survey on every receiver power
+    cycle. Once a survey is valid, switch to fixed mode with the surveyed
+    mean position (TIM-SVIN mean X/Y/Z in cm, variance in mm^2) and save,
+    so the fix survives reboots."""
+    ecef = (svin["meanX"], svin["meanY"], svin["meanZ"])
+    acc_mm = int(svin.get("meanV", 0) ** 0.5) or 1
+    ubx_set("0x06,0x3d", tmode2_payload(2, ecef_cm=ecef, fixed_acc_mm=acc_mm), "CFG-TMODE2 (fixed)")
+    ubx_save()
 
 
 def query_survey_status(gps_status):
@@ -733,6 +764,8 @@ def query_survey_status(gps_status):
         return result
     if mode == 2:
         result["state"] = "fixed"
+        if tmode.get("fixedPosAcc"):
+            result["accuracy_m"] = round(tmode["fixedPosAcc"] / 1000.0, 2)
         return result
 
     rc, out, _ = ubx(["-c", "0x0d,0x04"])
@@ -744,6 +777,12 @@ def query_survey_status(gps_status):
             result["accuracy_m"] = round((svin["meanV"] ** 0.5) / 1000.0, 2)
         if svin.get("valid") == 1 and svin.get("active", 0) == 0:
             result["state"] = "fixed"
+            try:
+                lock_surveyed_position(svin)
+                result["time_mode"] = 2
+                result["locked"] = True
+            except Exception as e:
+                result["error"] = f"survey complete but saving fixed position failed: {e}"
         else:
             result["state"] = "surveying"
     else:
@@ -769,12 +808,51 @@ def set_survey(action, min_hours=None, acc_m=None):
 
     if not shutil.which("ubxtool"):
         raise RuntimeError("ubxtool not installed")
-    rc, out, err = ubx(["-c", f"0x06,0x3d,{payload}"])
-    if rc != 0 or not re.search(r"ACK to Class x06 \(CFG\) ID x3d", out):
-        raise RuntimeError("receiver did not acknowledge CFG-TMODE2" + (f": {err.strip()}" if err.strip() else ""))
-    rc, out, err = ubx(["-p", "SAVE"])
-    if rc != 0:
-        raise RuntimeError("receiver config saved to RAM only (SAVE failed)")
+    ubx_set("0x06,0x3d", payload, "CFG-TMODE2")
+    ubx_save()
+
+
+def query_gnss_config():
+    """Enabled constellations from UBX-CFG-GNSS, e.g. {"GPS": True, ...}."""
+    rc, out, _ = ubx(["-c", "0x06,0x3e"])
+    if rc != 0 or "UBX-CFG-GNSS:" not in out:
+        return None
+    block = out[out.rindex("UBX-CFG-GNSS:"):]
+    found = {}
+    for gid, flags in re.findall(r"gnssId (\d+) TrkCh\s+\d+ maxTrCh\s+\d+ reserved \d+ Flags x([0-9a-fA-F]+)", block):
+        found[int(gid)] = bool(int(flags, 16) & 1)
+    if not found:
+        return None
+    return {name: found.get(gid, False) for name, gid in GNSS_IDS.items()}
+
+
+def set_gnss(requested):
+    """Apply constellation selection. GPS always stays on (timing base).
+    Disables are sent before enables so the M8's 3-system limit is never
+    exceeded mid-change. Enabling/disabling Galileo needs a hardware reset
+    (UBX-CFG-RST) to take effect - NOT ubxtool's "RESET" preset, which
+    restores factory defaults."""
+    if not isinstance(requested, dict):
+        raise ValueError("expected {constellation: bool}")
+    want = {name: bool(requested.get(name, False)) for name in GNSS_IDS}
+    want["GPS"] = True
+    if sum(want[n] for n in GNSS_MAJOR_OPTIONAL) > GNSS_MAX_OPTIONAL:
+        raise ValueError("u-blox M8: GPS plus at most two of GLONASS, Galileo, BeiDou")
+    current = query_gnss_config()
+    if current is None:
+        raise RuntimeError("receiver did not answer CFG-GNSS")
+    changes = [n for n in GNSS_IDS if want[n] != current.get(n)]
+    if not changes:
+        return current
+    for name in sorted(changes, key=lambda n: want[n]):
+        rc, _, err = ubx(["-e" if want[name] else "-d", name])
+        if rc != 0:
+            raise RuntimeError(f"failed to {'enable' if want[name] else 'disable'} {name}: {err.strip()}")
+    ubx_save()
+    if "GALILEO" in changes:
+        ubx(["-c", "0x06,0x04,0x00,0x00,0x00,0x00"])
+        time.sleep(5)
+    return query_gnss_config()
 
 
 def survey_loop():
@@ -784,8 +862,10 @@ def survey_loop():
             with STATE_LOCK:
                 gps_status = STATE.get("gps_status")
             survey = query_survey_status(gps_status)
+            gnss = query_gnss_config() if gps_status else None
             with STATE_LOCK:
                 STATE["survey"] = survey
+                STATE["gnss"] = gnss
         except Exception as e:
             with STATE_LOCK:
                 STATE["survey"] = {"state": "unknown", "error": f"survey poll error: {e}"}
@@ -967,7 +1047,7 @@ def build_status(desired, interfaces, profile_statuses, phc2sys_bridges, gps_sta
         "vlans": vlan_list,
         "profiles": profiles_out,
         "phc2sys": phc2sys_bridges,
-        "gps": dict(gps_status, survey=STATE.get("survey")) if gps_status else None,
+        "gps": dict(gps_status, survey=STATE.get("survey"), gnss=STATE.get("gnss")) if gps_status else None,
     }
 
 
@@ -1092,6 +1172,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/gps/survey":
             self._handle_survey()
             return
+        if parsed.path == "/api/gps/gnss":
+            self._handle_gnss()
+            return
         if parsed.path != "/api/config":
             self._send_json(404, {"error": "not found"})
             return
@@ -1146,6 +1229,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
             return
         self._send_json(200, {"ok": True, "survey": survey})
+
+    def _handle_gnss(self):
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+            with STATE_LOCK:
+                gps_status = STATE.get("gps_status")
+            if not gps_status:
+                raise ValueError("no local GPS receiver on this host")
+            gnss = set_gnss(body.get("gnss"))
+            with STATE_LOCK:
+                STATE["gnss"] = gnss
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+            return
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+            return
+        self._send_json(200, {"ok": True, "gnss": gnss})
 
     def log_message(self, *args):
         pass

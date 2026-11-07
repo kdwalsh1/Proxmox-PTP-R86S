@@ -11,7 +11,7 @@ $csrf = csrf_token();
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf" content="<?= htmlspecialchars($csrf) ?>">
   <title>PTP Control</title>
-  <link rel="stylesheet" href="assets/css/style.css?v=1794050000">
+  <link rel="stylesheet" href="assets/css/style.css?v=1794060000">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 </head>
 <body>
@@ -43,6 +43,26 @@ $csrf = csrf_token();
         <button type="submit" id="survey-start">Start survey-in</button>
         <button type="button" id="survey-stop">Stop (navigation mode)</button>
         <span id="survey-msg"></span>
+      </div>
+    </form>
+  </div>
+
+  <div class="gps-visual-card survey-card">
+    <h3>Constellations</h3>
+    <p class="survey-note">More satellites help when the sky view is restricted. The receiver tracks GPS
+      plus up to two of GLONASS, Galileo and BeiDou. Applying a change restarts tracking: expect the
+      fix and PPS to drop for up to a minute (the grandmaster advertises clockClass 248 until it
+      relocks), and changing Galileo also resets the receiver.</p>
+    <div id="gnss-status" class="banner banner-idle">Checking receiver...</div>
+    <form id="gnss-form" class="survey-form">
+      <label class="gnss-check"><input type="checkbox" name="GPS" checked disabled> GPS (always on)</label>
+      <label class="gnss-check"><input type="checkbox" name="GLONASS" data-major="1"> GLONASS</label>
+      <label class="gnss-check"><input type="checkbox" name="GALILEO" data-major="1"> Galileo</label>
+      <label class="gnss-check"><input type="checkbox" name="BEIDOU" data-major="1"> BeiDou</label>
+      <label class="gnss-check"><input type="checkbox" name="SBAS"> SBAS</label>
+      <div class="settings-actions">
+        <button type="submit" id="gnss-apply">Apply constellations</button>
+        <span id="gnss-msg"></span>
       </div>
     </form>
   </div>
@@ -131,6 +151,6 @@ $csrf = csrf_token();
     </section>
   </main>
 
-  <script src="assets/js/app.js?v=1794050000"></script>
+  <script src="assets/js/app.js?v=1794060000"></script>
 </body>
 </html>
