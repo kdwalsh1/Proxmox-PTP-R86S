@@ -1,0 +1,8 @@
+#!/bin/bash
+d=eth0
+tc qdisc replace dev $d root handle 1: prio bands 4 priomap 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3
+f="tc filter add dev $d parent 1: protocol ip prio"
+$f 1 u32 match ip protocol 17 0xff match ip dport 319 0xffff match u8 0x00 0x0f at 28 flowid 1:1
+$f 2 u32 match ip protocol 17 0xff match ip dport 320 0xffff match u8 0x08 0x0f at 28 flowid 1:1
+$f 3 u32 match ip protocol 17 0xff match ip dport 320 0xffff match u8 0x09 0x0f at 28 flowid 1:2
+$f 4 u32 match ip protocol 17 0xff match ip dport 319 0xffff match u8 0x01 0x0f at 28 flowid 1:3

@@ -1,0 +1,7 @@
+#!/bin/bash
+pps=$(awk -F: '/pps@/{gsub(/ /,"",$1);print $1}' /proc/interrupts)
+eth=$(awk -F: '/ eth0$/{gsub(/ /,"",$1);print $1}' /proc/interrupts)
+echo 3 > /proc/irq/$pps/smp_affinity_list
+echo 2 > /proc/irq/$eth/smp_affinity_list
+for t in $(pgrep "^irq/$pps-"); do taskset -pc 3 $t; chrt -f -p 95 $t; done
+for t in $(pgrep "^irq/$eth-"); do taskset -pc 2 $t; chrt -f -p 90 $t; done

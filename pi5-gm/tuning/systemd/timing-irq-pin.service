@@ -1,0 +1,9 @@
+[Unit]
+Description=Pin PPS and eth0 IRQs to isolated cores
+After=sysinit.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/timing-irq-pin
+ExecStart=/usr/local/sbin/ptp-qdisc
+[Install]
+WantedBy=multi-user.target
